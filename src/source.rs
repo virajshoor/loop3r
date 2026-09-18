@@ -75,6 +75,7 @@ fn inspect_tree(
     security: &mut Vec<SecurityFinding>,
 ) {
     let mut stack = vec![node];
+    let aliases = crate::imports::collect_aliases(node, source, language);
     while let Some(current) = stack.pop() {
         if current.is_error() || current.is_missing() {
             let point = current.start_position();
@@ -89,6 +90,8 @@ fn inspect_tree(
         if is_call(language, current.kind())
             && let Some(name) = callee(current, source, language)
         {
+            let compact: String = name.chars().filter(|ch| !ch.is_whitespace()).collect();
+            let canonical = crate::imports::resolve_callee(&compact, &aliases);
             for rule in rules
                 .iter()
                 .filter(|rule| rule.languages.contains(&language))
@@ -96,7 +99,7 @@ fn inspect_tree(
                 if !rule
                     .callees
                     .iter()
-                    .any(|expected| callee_matches(&name, expected))
+                    .any(|expected| callee_matches(&canonical, expected))
                 {
                     continue;
                 }
@@ -111,6 +114,11 @@ fn inspect_tree(
                     line: point.row + 1,
                     column: point.column + 1,
                     callee: name.clone(),
+                    resolved_callee: if canonical != compact {
+                        Some(canonical.clone())
+                    } else {
+                        None
+                    },
                     evidence: raw.chars().take(160).collect(),
                     message: rule.message.clone(),
                     references: rule.references.clone(),
@@ -119,6 +127,7 @@ fn inspect_tree(
                     } else {
                         Confidence::Medium
                     },
+                    suppressed: None,
                 });
             }
         }
@@ -126,7 +135,7 @@ fn inspect_tree(
     }
 }
 
-fn shuffle<T>(items: &mut [T], mut state: u64) {
+pub(crate) fn shuffle<T>(items: &mut [T], mut state: u64) {
     for index in (1..items.len()).rev() {
         state ^= state << 13;
         state ^= state >> 7;
@@ -146,14 +155,17 @@ pub fn scan(
         anyhow::bail!("target does not exist: {}", target.display());
     }
     let started = Instant::now();
-    let mut files = source_files(target, max_bytes, &scope)?;
+    let discovery = source_files(target, max_bytes, &scope)?;
+    let mut files = discovery.files;
     shuffle(&mut files, seed);
     let mut parser = Parser::new();
     let mut languages = BTreeMap::new();
     let mut syntax_findings = Vec::new();
     let mut security_findings = Vec::new();
+    let mut secret_findings = Vec::new();
     let rules = crate::core::load_ast_rules()?;
     let mut files_parsed = 0;
+    let mut secret_files_scanned = 0_usize;
     let mut timed_out = false;
     for (path, language) in &files {
         if started.elapsed() >= Duration::from_secs(budget_seconds) {
@@ -161,6 +173,7 @@ pub fn scan(
             break;
         }
         let source = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        secret_findings.extend(crate::secrets::scan_secrets(path, &source));
         parser
             .set_language(&language.grammar())
             .with_context(|| format!("loading {language:?} grammar"))?;
@@ -179,16 +192,35 @@ pub fn scan(
             &mut security_findings,
         );
     }
+    for path in &discovery.secret_files {
+        if started.elapsed() >= Duration::from_secs(budget_seconds) {
+            timed_out = true;
+            break;
+        }
+        let source = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        secret_findings.extend(crate::secrets::scan_secrets(path, &source));
+        secret_files_scanned += 1;
+    }
     security_findings
         .sort_by(|a, b| (&a.path, a.line, &a.rule_id).cmp(&(&b.path, b.line, &b.rule_id)));
+    secret_findings.sort_by(|a, b| (&a.path, a.line, a.rule_id).cmp(&(&b.path, b.line, b.rule_id)));
+    syntax_findings.sort_by(|a, b| {
+        (&a.path, a.line, a.column, &a.node_kind).cmp(&(&b.path, b.line, b.column, &b.node_kind))
+    });
     Ok(Report {
-        schema_version: 1,
+        schema_version: 3,
         files_parsed,
+        secret_files_scanned,
+        files_skipped_oversized: discovery.skipped_oversized,
+        files_skipped_unsupported: discovery.skipped_unsupported,
         languages,
         syntax_findings,
         security_findings,
+        secret_findings,
         timed_out,
         seed,
+        baseline: None,
+        suppressions: crate::report::SuppressionReport::none(),
         scope: ScopeReport {
             target: target.to_path_buf(),
             max_file_bytes: max_bytes,

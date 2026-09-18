@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/virajshoor/loop3r/schema/web-v1.schema.json",
+  "title": "loop3r web probe report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "url",
+    "status",
+    "duration_ms",
+    "redirect",
+    "findings",
+    "confidence_scale"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "url": { "type": "string" },
+    "status": { "type": "integer", "minimum": 100, "maximum": 599 },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "redirect": { "type": ["string", "null"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "rule_id",
+          "severity",
+          "message",
+          "evidence",
+          "reference",
+          "confidence"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "rule_id": { "type": "string" },
+          "severity": { "enum": ["high", "medium", "review"] },
+          "message": { "type": "string" },
+          "evidence": { "type": "string" },
+          "reference": { "type": "string" },
+          "confidence": { "enum": ["low", "medium", "high", "confirmed"] }
+        }
+      }
+    },
+    "confidence_scale": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    }
+  }
+}

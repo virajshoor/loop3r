@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/virajshoor/loop3r/schema/scan-v3.schema.json",
+  "title": "loop3r source scan report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "files_parsed",
+    "secret_files_scanned",
+    "files_skipped_oversized",
+    "files_skipped_unsupported",
+    "languages",
+    "syntax_findings",
+    "security_findings",
+    "secret_findings",
+    "timed_out",
+    "seed",
+    "scope",
+    "baseline",
+    "suppressions",
+    "confidence_scale"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 3 },
+    "files_parsed": { "type": "integer", "minimum": 0 },
+    "secret_files_scanned": { "type": "integer", "minimum": 0 },
+    "files_skipped_oversized": { "type": "integer", "minimum": 0 },
+    "files_skipped_unsupported": { "type": "integer", "minimum": 0 },
+    "languages": {
+      "type": "object",
+      "propertyNames": {
+        "enum": [
+          "c",
+          "csharp",
+          "css",
+          "go",
+          "html",
+          "java",
+          "javascript",
+          "kotlin",
+          "php",
+          "python",
+          "ruby",
+          "rust",
+          "shell",
+          "sql",
+          "swift",
+          "typescript",
+          "tsx"
+        ]
+      },
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "syntax_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "language", "line", "column", "node_kind"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string" },
+          "language": {
+            "enum": [
+              "c",
+              "csharp",
+              "css",
+              "go",
+              "html",
+              "java",
+              "javascript",
+              "kotlin",
+              "php",
+              "python",
+              "ruby",
+              "rust",
+              "shell",
+              "sql",
+              "swift",
+              "typescript",
+              "tsx"
+            ]
+          },
+          "line": { "type": "integer", "minimum": 1 },
+          "column": { "type": "integer", "minimum": 1 },
+          "node_kind": { "type": "string" }
+        }
+      }
+    },
+    "security_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "rule_id",
+          "title",
+          "severity",
+          "cwe",
+          "path",
+          "line",
+          "column",
+          "callee",
+          "resolved_callee",
+          "evidence",
+          "message",
+          "references",
+          "confidence",
+          "suppressed"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "rule_id": { "type": "string" },
+          "title": { "type": "string" },
+          "severity": { "enum": ["high", "review"] },
+          "cwe": { "type": "string", "pattern": "^CWE-[0-9]+$" },
+          "path": { "type": "string" },
+          "line": { "type": "integer", "minimum": 1 },
+          "column": { "type": "integer", "minimum": 1 },
+          "callee": { "type": "string" },
+          "resolved_callee": { "type": ["string", "null"] },
+          "evidence": { "type": "string" },
+          "message": { "type": "string" },
+          "references": { "type": "array", "items": { "type": "string" } },
+          "confidence": { "enum": ["low", "medium", "high", "confirmed"] },
+          "suppressed": {
+            "anyOf": [
+              { "type": "null" },
+              {
+                "type": "object",
+                "required": ["reason", "owner", "expires"],
+                "additionalProperties": false,
+                "properties": {
+                  "reason": { "type": "string" },
+                  "owner": { "type": "string" },
+                  "expires": { "type": "string" }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "secret_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "rule_id",
+          "title",
+          "severity",
+          "cwe",
+          "path",
+          "line",
+          "column",
+          "evidence",
+          "fingerprint",
+          "message",
+          "reference",
+          "confidence",
+          "suppressed"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "rule_id": { "type": "string" },
+          "title": { "type": "string" },
+          "severity": { "enum": ["high"] },
+          "cwe": { "type": "string", "pattern": "^CWE-[0-9]+$" },
+          "path": { "type": "string" },
+          "line": { "type": "integer", "minimum": 1 },
+          "column": { "type": "integer", "minimum": 1 },
+          "evidence": { "type": "string" },
+          "fingerprint": { "type": "string" },
+          "message": { "type": "string" },
+          "reference": { "type": "string" },
+          "confidence": { "enum": ["low", "medium", "high", "confirmed"] },
+          "suppressed": {
+            "anyOf": [
+              { "type": "null" },
+              {
+                "type": "object",
+                "required": ["reason", "owner", "expires"],
+                "additionalProperties": false,
+                "properties": {
+                  "reason": { "type": "string" },
+                  "owner": { "type": "string" },
+                  "expires": { "type": "string" }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "timed_out": { "type": "boolean" },
+    "seed": { "type": "integer", "minimum": 0 },
+    "scope": {
+      "type": "object",
+      "required": [
+        "target",
+        "max_file_bytes",
+        "budget_seconds",
+        "include",
+        "exclude",
+        "languages"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "target": { "type": "string" },
+        "max_file_bytes": { "type": "integer", "minimum": 0 },
+        "budget_seconds": { "type": "integer", "minimum": 0 },
+        "include": { "type": "array", "items": { "type": "string" } },
+        "exclude": { "type": "array", "items": { "type": "string" } },
+        "languages": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "c",
+              "csharp",
+              "css",
+              "go",
+              "html",
+              "java",
+              "javascript",
+              "kotlin",
+              "php",
+              "python",
+              "ruby",
+              "rust",
+              "shell",
+              "sql",
+              "swift",
+              "typescript",
+              "tsx"
+            ]
+          }
+        }
+      }
+    },
+    "baseline": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": [
+            "path",
+            "new_security",
+            "new_secrets",
+            "fixed_security",
+            "fixed_secrets"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "path": { "type": "string" },
+            "new_security": { "type": "integer", "minimum": 0 },
+            "new_secrets": { "type": "integer", "minimum": 0 },
+            "fixed_security": { "type": "integer", "minimum": 0 },
+            "fixed_secrets": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
+    "suppressions": {
+      "type": "object",
+      "required": ["file", "applied", "expired"],
+      "additionalProperties": false,
+      "properties": {
+        "file": { "type": ["string", "null"] },
+        "applied": { "type": "integer", "minimum": 0 },
+        "expired": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "confidence_scale": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    }
+  }
+}

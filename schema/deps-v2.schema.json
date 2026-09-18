@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/virajshoor/loop3r/schema/deps-v2.schema.json",
+  "title": "loop3r dependency inventory report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "target",
+    "lockfiles",
+    "packages",
+    "unsupported",
+    "errors",
+    "advisory_db",
+    "vulnerabilities"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 2 },
+    "target": { "type": "string" },
+    "lockfiles": { "type": "array", "items": { "type": "string" } },
+    "packages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ecosystem", "name", "version", "source", "lockfile"],
+        "additionalProperties": false,
+        "properties": {
+          "ecosystem": { "enum": ["cargo", "npm"] },
+          "name": { "type": "string" },
+          "version": { "type": "string" },
+          "source": { "type": ["string", "null"] },
+          "lockfile": { "type": "string" }
+        }
+      }
+    },
+    "unsupported": { "type": "array", "items": { "type": "string" } },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["lockfile", "message"],
+        "additionalProperties": false,
+        "properties": {
+          "lockfile": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "advisory_db": { "type": ["string", "null"] },
+    "vulnerabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "advisory_id",
+          "ecosystem",
+          "package",
+          "version",
+          "severity",
+          "summary",
+          "reference",
+          "lockfile"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "advisory_id": { "type": "string" },
+          "ecosystem": { "type": "string" },
+          "package": { "type": "string" },
+          "version": { "type": "string" },
+          "severity": { "enum": ["low", "medium", "high", "critical"] },
+          "summary": { "type": "string" },
+          "reference": { "type": "string" },
+          "lockfile": { "type": "string" }
+        }
+      }
+    }
+  }
+}

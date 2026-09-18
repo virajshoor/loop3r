@@ -55,6 +55,11 @@ impl Scope {
             && (self.languages.is_empty() || self.languages.contains(&language))
     }
 
+    pub fn allows_secret_file(&self, relative: &Path) -> bool {
+        (self.include_patterns.is_empty() || self.include.is_match(relative))
+            && !self.exclude.is_match(relative)
+    }
+
     pub fn include_patterns(&self) -> &[String] {
         &self.include_patterns
     }
@@ -68,7 +73,7 @@ impl Scope {
     }
 }
 
-fn ignored(entry: &DirEntry) -> bool {
+pub(crate) fn ignored(entry: &DirEntry) -> bool {
     entry.file_type().is_dir()
         && matches!(
             entry.file_name().to_str(),
@@ -76,11 +81,41 @@ fn ignored(entry: &DirEntry) -> bool {
         )
 }
 
-pub fn source_files(
-    target: &Path,
-    max_bytes: u64,
-    scope: &Scope,
-) -> Result<Vec<(PathBuf, LanguageId)>> {
+pub struct Discovery {
+    pub files: Vec<(PathBuf, LanguageId)>,
+    pub secret_files: Vec<PathBuf>,
+    pub skipped_oversized: usize,
+    pub skipped_unsupported: usize,
+}
+
+pub fn is_secret_file(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if name == ".env" || name == ".envrc" || name.starts_with(".env.") {
+        return true;
+    }
+    matches!(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+        "json" | "yaml" | "yml" | "toml" | "ini" | "cfg" | "conf" | "properties"
+    )
+}
+
+fn empty_discovery() -> Discovery {
+    Discovery {
+        files: Vec::new(),
+        secret_files: Vec::new(),
+        skipped_oversized: 0,
+        skipped_unsupported: 0,
+    }
+}
+
+pub fn source_files(target: &Path, max_bytes: u64, scope: &Scope) -> Result<Discovery> {
     if target.is_file() {
         if std::fs::symlink_metadata(target)?.file_type().is_symlink() {
             anyhow::bail!("refusing symlink target: {}", target.display());
@@ -88,35 +123,62 @@ pub fn source_files(
         if target.metadata()?.len() > max_bytes {
             anyhow::bail!("target exceeds max-file-bytes: {}", target.display());
         }
-        let language = LanguageId::from_path(target).context("unsupported source extension")?;
-        if !scope.allows(
-            Path::new(target.file_name().context("target has no filename")?),
-            language,
-        ) {
-            return Ok(Vec::new());
+        let file_name = Path::new(target.file_name().context("target has no filename")?);
+        if is_secret_file(target) {
+            if !scope.allows_secret_file(file_name) {
+                return Ok(empty_discovery());
+            }
+            let mut discovery = empty_discovery();
+            discovery.secret_files.push(target.to_path_buf());
+            return Ok(discovery);
         }
-        return Ok(vec![(target.to_path_buf(), language)]);
+        let language = LanguageId::from_path(target).context("unsupported source extension")?;
+        if !scope.allows(file_name, language) {
+            return Ok(empty_discovery());
+        }
+        let mut discovery = empty_discovery();
+        discovery.files.push((target.to_path_buf(), language));
+        return Ok(discovery);
     }
     let mut files = Vec::new();
+    let mut secret_files = Vec::new();
+    let mut skipped_oversized = 0_usize;
+    let mut skipped_unsupported = 0_usize;
     for entry in WalkDir::new(target)
         .follow_links(false)
         .into_iter()
         .filter_entry(|entry| !ignored(entry))
     {
         let entry = entry.with_context(|| format!("walking {}", target.display()))?;
-        if !entry.file_type().is_file() || entry.metadata()?.len() > max_bytes {
+        if !entry.file_type().is_file() {
             continue;
         }
+        if entry.metadata()?.len() > max_bytes {
+            skipped_oversized += 1;
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(target)
+            .context("resolving scoped path")?;
         if let Some(language) = LanguageId::from_path(entry.path()) {
-            let relative = entry
-                .path()
-                .strip_prefix(target)
-                .context("resolving scoped path")?;
             if scope.allows(relative, language) {
                 files.push((entry.into_path(), language));
             }
+        } else if is_secret_file(entry.path()) {
+            if scope.allows_secret_file(relative) {
+                secret_files.push(entry.into_path());
+            }
+        } else {
+            skipped_unsupported += 1;
         }
     }
     files.sort();
-    Ok(files)
+    secret_files.sort();
+    Ok(Discovery {
+        files,
+        secret_files,
+        skipped_oversized,
+        skipped_unsupported,
+    })
 }

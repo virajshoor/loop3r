@@ -9,6 +9,61 @@ fn header(headers: &HeaderMap, name: HeaderName) -> Option<String> {
     headers.get(name)?.to_str().ok().map(str::to_owned)
 }
 
+struct CookieFlags {
+    name: String,
+    httponly: bool,
+    secure: bool,
+    samesite: bool,
+}
+
+fn parse_set_cookie(header: &str) -> Option<CookieFlags> {
+    let mut segments = header.split(';');
+    let first = segments.next()?.trim();
+    if first.is_empty() {
+        return None;
+    }
+    let raw_name = first.split('=').next().unwrap_or("cookie").trim();
+    if raw_name.is_empty() {
+        return None;
+    }
+    let name: String = raw_name
+        .chars()
+        .filter(|char| !char.is_control())
+        .take(64)
+        .collect();
+    let mut flags = CookieFlags {
+        name,
+        httponly: false,
+        secure: false,
+        samesite: false,
+    };
+    for segment in segments {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        let (key, value) = match segment.split_once('=') {
+            Some((key, value)) => (key.trim(), Some(value.trim().trim_matches('"'))),
+            None => (segment, None),
+        };
+        if key.eq_ignore_ascii_case("httponly") {
+            flags.httponly = true;
+        } else if key.eq_ignore_ascii_case("secure") {
+            flags.secure = true;
+        } else if key.eq_ignore_ascii_case("samesite")
+            && value.is_some_and(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "lax" | "strict" | "none"
+                )
+            })
+        {
+            flags.samesite = true;
+        }
+    }
+    Some(flags)
+}
+
 pub fn web_scan(raw_url: &str, timeout_seconds: u64) -> Result<WebReport> {
     if timeout_seconds == 0 || timeout_seconds > 120 {
         bail!("timeout-seconds must be between 1 and 120");
@@ -91,49 +146,113 @@ pub fn web_scan(raw_url: &str, timeout_seconds: u64) -> Result<WebReport> {
             confidence: Confidence::Confirmed,
         });
     }
+    let mut saw_cookie = false;
     for cookie in headers.get_all(reqwest::header::SET_COOKIE) {
         let Ok(cookie) = cookie.to_str() else {
             continue;
         };
-        let attributes = cookie.to_ascii_lowercase();
-        let name = cookie.split('=').next().unwrap_or("cookie");
-        if !attributes.contains("httponly") {
+        let Some(flags) = parse_set_cookie(cookie) else {
+            continue;
+        };
+        saw_cookie = true;
+        if !flags.httponly {
             findings.push(WebFinding {
                 rule_id: "WEB-COOKIE-HTTPONLY",
                 severity: "review",
                 message: "Set HttpOnly on session or authentication cookies.",
-                evidence: format!("cookie {name} lacks HttpOnly"),
+                evidence: format!("cookie {} lacks HttpOnly", flags.name),
                 reference: "https://developer.mozilla.org/docs/Web/HTTP/Headers/Set-Cookie",
                 confidence: Confidence::High,
             });
         }
-        if url.scheme() == "https" && !attributes.contains("secure") {
+        if url.scheme() == "https" && !flags.secure {
             findings.push(WebFinding {
                 rule_id: "WEB-COOKIE-SECURE",
                 severity: "medium",
                 message: "Set Secure on cookies sent by HTTPS applications.",
-                evidence: format!("cookie {name} lacks Secure"),
+                evidence: format!("cookie {} lacks Secure", flags.name),
                 reference: "https://developer.mozilla.org/docs/Web/HTTP/Headers/Set-Cookie",
                 confidence: Confidence::High,
             });
         }
-        if !attributes.contains("samesite") {
+        if !flags.samesite {
             findings.push(WebFinding {
                 rule_id: "WEB-COOKIE-SAMESITE",
                 severity: "review",
                 message: "Set explicit SameSite policy on state-bearing cookies.",
-                evidence: format!("cookie {name} lacks SameSite"),
+                evidence: format!("cookie {} lacks valid SameSite", flags.name),
                 reference: "https://developer.mozilla.org/docs/Web/HTTP/Headers/Set-Cookie",
                 confidence: Confidence::High,
             });
         }
+    }
+    if saw_cookie && !headers.contains_key(reqwest::header::CACHE_CONTROL) {
+        findings.push(WebFinding {
+            rule_id: "WEB-CACHE",
+            severity: "review",
+            message: "Send Cache-Control with Set-Cookie responses; use no-store for authenticated content.",
+            evidence: "Set-Cookie without Cache-Control".into(),
+            reference: "https://developer.mozilla.org/docs/Web/HTTP/Headers/Cache-Control",
+            confidence: Confidence::High,
+        });
     }
     Ok(WebReport {
         schema_version: 1,
         url: url.to_string(),
         status,
         duration_ms: started.elapsed().as_millis(),
+        redirect: if (300..400).contains(&status) {
+            header(headers, reqwest::header::LOCATION).map(|location| {
+                location
+                    .chars()
+                    .filter(|char| !char.is_control())
+                    .take(200)
+                    .collect()
+            })
+        } else {
+            None
+        },
         findings,
         confidence_scale: confidence_scale(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_cookie_attributes_case_insensitively() {
+        let flags = parse_set_cookie("session=abc; httponly; SECURE; samesite=Lax").unwrap();
+        assert_eq!(flags.name, "session");
+        assert!(flags.httponly && flags.secure && flags.samesite);
+    }
+
+    #[test]
+    fn cookie_values_cannot_fake_attributes() {
+        let flags = parse_set_cookie("trick=httponly-samesite-secure; Path=/").unwrap();
+        assert_eq!(flags.name, "trick");
+        assert!(!flags.httponly && !flags.secure && !flags.samesite);
+    }
+
+    #[test]
+    fn rejects_invalid_samesite_value() {
+        let flags = parse_set_cookie("a=b; SameSite=Sometimes").unwrap();
+        assert!(!flags.samesite);
+    }
+
+    #[test]
+    fn accepts_quoted_samesite_and_ignores_expires() {
+        let flags =
+            parse_set_cookie("a=b; Expires=Wed, 21 Oct 2015 07:28:00 GMT; SameSite=\"Strict\"")
+                .unwrap();
+        assert!(flags.samesite);
+    }
+
+    #[test]
+    fn rejects_empty_cookie_headers() {
+        assert!(parse_set_cookie("").is_none());
+        assert!(parse_set_cookie("   ").is_none());
+        assert!(parse_set_cookie("=value").is_none());
+    }
 }

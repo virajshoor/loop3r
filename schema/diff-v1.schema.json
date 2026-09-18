@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/virajshoor/loop3r/schema/diff-v1.schema.json",
+  "title": "loop3r report diff",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "old",
+    "new",
+    "added_security",
+    "fixed_security",
+    "added_secrets",
+    "fixed_secrets",
+    "unchanged_security",
+    "unchanged_secrets"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "old": { "type": "string" },
+    "new": { "type": "string" },
+    "added_security": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id"],
+        "properties": { "rule_id": { "type": "string" } },
+        "additionalProperties": true
+      }
+    },
+    "fixed_security": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id"],
+        "properties": { "rule_id": { "type": "string" } },
+        "additionalProperties": true
+      }
+    },
+    "added_secrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id"],
+        "properties": { "rule_id": { "type": "string" } },
+        "additionalProperties": true
+      }
+    },
+    "fixed_secrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id"],
+        "properties": { "rule_id": { "type": "string" } },
+        "additionalProperties": true
+      }
+    },
+    "unchanged_security": { "type": "integer", "minimum": 0 },
+    "unchanged_secrets": { "type": "integer", "minimum": 0 }
+  }
+}

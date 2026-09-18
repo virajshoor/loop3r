@@ -18,6 +18,17 @@ pub enum Confidence {
     Confirmed,
 }
 
+impl Confidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Confirmed => "confirmed",
+        }
+    }
+}
+
 pub fn confidence_scale() -> BTreeMap<&'static str, &'static str> {
     BTreeMap::from([
         (
@@ -49,22 +60,105 @@ pub struct SecurityFinding {
     pub line: usize,
     pub column: usize,
     pub callee: String,
+    pub resolved_callee: Option<String>,
     pub evidence: String,
     pub message: String,
     pub references: Vec<String>,
     pub confidence: Confidence,
+    pub suppressed: Option<SuppressedBy>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct SuppressedBy {
+    pub reason: String,
+    pub owner: String,
+    pub expires: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BaselineSummary {
+    pub path: PathBuf,
+    pub new_security: usize,
+    pub new_secrets: usize,
+    pub fixed_security: usize,
+    pub fixed_secrets: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SuppressionReport {
+    pub file: Option<PathBuf>,
+    pub applied: usize,
+    pub expired: Vec<String>,
+}
+
+impl SuppressionReport {
+    pub fn none() -> Self {
+        Self {
+            file: None,
+            applied: 0,
+            expired: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SecurityFindingLike {
+    pub rule_id: String,
+    pub path: String,
+    pub line: usize,
+    pub column: usize,
+    pub callee: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct SecretFindingLike {
+    pub rule_id: String,
+    pub path: String,
+    pub line: usize,
+    pub column: usize,
+    pub content_fingerprint: String,
+}
+
+impl From<&SecurityFinding> for SecurityFindingLike {
+    fn from(finding: &SecurityFinding) -> Self {
+        Self {
+            rule_id: finding.rule_id.clone(),
+            path: finding.path.to_string_lossy().into_owned(),
+            line: finding.line,
+            column: finding.column,
+            callee: finding.callee.clone(),
+        }
+    }
+}
+
+impl From<&super::secrets::SecretFinding> for SecretFindingLike {
+    fn from(finding: &super::secrets::SecretFinding) -> Self {
+        Self {
+            rule_id: finding.rule_id.to_owned(),
+            path: finding.path.to_string_lossy().into_owned(),
+            line: finding.line,
+            column: finding.column,
+            content_fingerprint: finding.fingerprint.clone(),
+        }
+    }
 }
 
 #[derive(Serialize)]
 pub struct Report {
     pub schema_version: u8,
     pub files_parsed: usize,
+    pub secret_files_scanned: usize,
+    pub files_skipped_oversized: usize,
+    pub files_skipped_unsupported: usize,
     pub languages: BTreeMap<LanguageId, usize>,
     pub syntax_findings: Vec<SyntaxFinding>,
     pub security_findings: Vec<SecurityFinding>,
+    pub secret_findings: Vec<super::secrets::SecretFinding>,
     pub timed_out: bool,
     pub seed: u64,
     pub scope: super::scope::ScopeReport,
+    pub baseline: Option<BaselineSummary>,
+    pub suppressions: SuppressionReport,
     pub confidence_scale: BTreeMap<&'static str, &'static str>,
 }
 
@@ -93,6 +187,7 @@ pub struct WebReport {
     pub url: String,
     pub status: u16,
     pub duration_ms: u128,
+    pub redirect: Option<String>,
     pub findings: Vec<WebFinding>,
     pub confidence_scale: BTreeMap<&'static str, &'static str>,
 }
