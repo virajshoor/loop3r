@@ -1,0 +1,38 @@
+[
+  {
+    "name": "GitHub Advisory Database",
+    "url": "https://github.com/github/advisory-database",
+    "format": "OSV",
+    "use": "Package versions, CWE types, fix commits across Composer, Go, Maven, npm, NuGet, pip, RubyGems, Rust, and Swift"
+  },
+  {
+    "name": "OSV API",
+    "url": "https://api.osv.dev/v1/querybatch",
+    "format": "OSV",
+    "use": "Batch dependency-version matching"
+  },
+  {
+    "name": "RustSec Advisory Database",
+    "url": "https://github.com/RustSec/advisory-db",
+    "format": "RustSec and OSV",
+    "use": "Rust crate versions, vulnerable functions, patched versions"
+  },
+  {
+    "name": "CISA Known Exploited Vulnerabilities",
+    "url": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+    "format": "JSON",
+    "use": "Prioritize vulnerabilities exploited in real attacks"
+  },
+  {
+    "name": "MITRE CWE",
+    "url": "https://cwe.mitre.org/data/downloads.html",
+    "format": "XML/CSV",
+    "use": "Normalize weakness taxonomy and mitigations"
+  },
+  {
+    "name": "OWASP Top 10",
+    "url": "https://owasp.org/www-project-top-ten/",
+    "format": "Documentation",
+    "use": "Web risk categories and test guidance"
+  }
+]

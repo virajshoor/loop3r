@@ -1,0 +1,98 @@
+[
+  {
+    "id": "CVE-2014-0160",
+    "name": "OpenSSL Heartbleed out-of-bounds read",
+    "cwe": "CWE-125",
+    "error": "Trusted attacker-declared heartbeat length without proving payload buffer contained that many bytes.",
+    "fixed_by": "Validate payload length before copying or returning heartbeat data.",
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2014-0160"
+  },
+  {
+    "id": "CVE-2014-6271",
+    "name": "Bash Shellshock command injection",
+    "cwe": "CWE-78",
+    "error": "Environment function parser executed command text trailing function definition.",
+    "fixed_by": "Stop parsing after function definition and reject trailing command content.",
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2014-6271"
+  },
+  {
+    "id": "CVE-2021-3156",
+    "name": "sudo Baron Samedit heap overflow",
+    "cwe": "CWE-122",
+    "error": "Off-by-one and inconsistent escaping length accounting caused heap buffer overflow.",
+    "fixed_by": "Use consistent unescape mode and exact destination-size accounting.",
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2021-3156"
+  },
+  {
+    "id": "CVE-2021-44228",
+    "name": "Log4Shell attacker-controlled JNDI lookup",
+    "cwe": "CWE-502",
+    "error": "Logging attacker-controlled text could resolve remote JNDI resources and construct objects.",
+    "fixed_by": "Upgrade Log4j; remove unsafe lookup behavior and remote protocol support.",
+    "source": "https://logging.apache.org/log4j/2.x/security.html"
+  },
+  {
+    "id": "CVE-2022-22965",
+    "name": "Spring4Shell unsafe data binding",
+    "cwe": "CWE-94",
+    "error": "Request data binding exposed a path to mutate sensitive class-loader-backed properties.",
+    "fixed_by": "Upgrade Spring and deny dangerous binding paths at framework boundary.",
+    "source": "https://spring.io/security/cve-2022-22965"
+  },
+  {
+    "id": "CVE-2023-34362",
+    "name": "MOVEit Transfer SQL injection",
+    "cwe": "CWE-89",
+    "error": "Unauthenticated request data reached SQL construction and enabled database reads/writes.",
+    "fixed_by": "Apply vendor patch; parameterize queries and remove unauthenticated database reachability.",
+    "source": "https://www.cisa.gov/news-events/cybersecurity-advisories/aa23-158a"
+  },
+  {
+    "id": "CVE-2023-4863",
+    "name": "libwebp Huffman-table out-of-bounds write",
+    "cwe": "CWE-787",
+    "error": "Crafted WebP data drove Huffman table construction beyond allocated bounds.",
+    "fixed_by": "Bound table construction and reject oversized invalid code-length combinations.",
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2023-4863"
+  },
+  {
+    "id": "CVE-2023-7028",
+    "name": "GitLab password-reset account takeover",
+    "cwe": "CWE-284",
+    "error": "Password-reset email could also be sent to attacker-controlled unverified address.",
+    "fixed_by": "Send reset material only through verified account recovery destinations.",
+    "source": "https://about.gitlab.com/releases/2024/01/11/critical-security-release-gitlab-16-7-2-released/"
+  },
+  {
+    "id": "CVE-2024-24576",
+    "name": "Rust BatBadBut Windows command injection",
+    "cwe": "CWE-78",
+    "error": "Windows batch-file argument quoting could not safely represent attacker-controlled arguments.",
+    "fixed_by": "Upgrade Rust; reject unsafe batch arguments or avoid batch execution for untrusted input.",
+    "source": "https://blog.rust-lang.org/2024/04/09/cve-2024-24576/"
+  },
+  {
+    "id": "CVE-2024-29041",
+    "name": "Express malformed-URL open redirect",
+    "cwe": "CWE-601",
+    "error": "Malformed URL encoding bypassed otherwise-correct redirect allowlists in res.location/res.redirect.",
+    "fixed_by": "Upgrade Express to 4.19.2 or 5.0.0-beta.3 and retain strict redirect allowlisting.",
+    "source": "https://github.com/expressjs/express/security/advisories/GHSA-rv95-896h-c2vc"
+  },
+  {
+    "id": "CVE-2020-14343",
+    "name": "PyYAML unsafe loader bypass",
+    "cwe": "CWE-502",
+    "error": "FullLoader allowed object construction paths leading to arbitrary code execution.",
+    "fixed_by": "Upgrade PyYAML and use safe_load for untrusted documents.",
+    "source": "https://github.com/yaml/pyyaml/security/advisories/GHSA-8q59-q68h-6hv4"
+  },
+  {
+    "id": "CVE-2018-1002201",
+    "name": "Zip Slip archive path traversal",
+    "cwe": "CWE-22",
+    "error": "Archive entry names escaped extraction root and overwrote arbitrary files.",
+    "fixed_by": "Resolve each output path and prove it remains inside extraction root before writing.",
+    "source": "https://nvd.nist.gov/vuln/detail/CVE-2018-1002201"
+  }
+]

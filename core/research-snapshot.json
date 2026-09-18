@@ -1,0 +1,28 @@
+{
+  "retrieved_at": "2026-09-17",
+  "source": "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+  "catalog_version": "2026.09.16",
+  "catalog_entries": 1713,
+  "top_cwe_counts": {
+    "CWE-20": 118,
+    "CWE-78": 110,
+    "CWE-787": 103,
+    "CWE-416": 93,
+    "CWE-119": 85,
+    "CWE-22": 78,
+    "CWE-502": 71,
+    "CWE-94": 70,
+    "CWE-287": 47,
+    "CWE-306": 42,
+    "CWE-843": 38,
+    "CWE-284": 36,
+    "CWE-79": 33,
+    "CWE-89": 32,
+    "CWE-122": 32,
+    "CWE-200": 25,
+    "CWE-434": 23,
+    "CWE-918": 22,
+    "CWE-863": 17
+  },
+  "note": "Counts prioritize rule families; they are not prevalence estimates for arbitrary repositories."
+}
