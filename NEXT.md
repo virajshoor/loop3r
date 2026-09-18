@@ -40,20 +40,16 @@
   `-rw-------` output.
 - Release profile uses thin LTO, stripping, and one codegen unit.
 
-## P1: split current single file — IN PROGRESS
+## P1: split current single file — DONE (2026-09-18)
 
-Keep behavior unchanged while moving code:
-
-```text
-src/
-  main.rs        CLI and exit-code dispatch only
-  language.rs    extension mapping and embedded grammars
-  scope.rs       filesystem/web scope validation
-  source.rs      parsing, AST traversal, rule execution
-  web.rs         HTTP client and passive probes
-  report.rs      schemas, confidence, atomic private output
-  core.rs        validated embedded Core loading
-```
+Behavior unchanged; code now lives in `src/language.rs`, `src/scope.rs`,
+`src/report.rs`, `src/core.rs`, `src/source.rs`, `src/web.rs`, with `main.rs`
+reduced to CLI/exit-code dispatch and tests. `core.rs` additionally validates
+the embedded rule catalog at load (duplicate IDs, severity, CWE format,
+non-empty languages/callees, HTTPS-only references). All gates re-verified:
+fmt check, 8 debug/release tests, strict Clippy `-D warnings`, release build,
+seed-42 self-scan with `-rw-------` output. Repo published public at
+github.com/virajshoor/loop3r with no secrets in tracked files.
 
 No generic plugin framework yet. Add abstraction only when second real
 implementation needs it.
