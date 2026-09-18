@@ -21,20 +21,20 @@
 | 1 | `scan`/`web` produced at least one gated finding; `validate` found schema errors |
 | 2 | Scanner or configuration error (bad flags, unreadable input, failed probe, malformed suppression/advisory/baseline file) |
 
-## Source report (schema v3)
+## Source report (schema v4)
 
 Top-level fields:
 
 | Field | Contents |
 |---|---|
-| `schema_version` | `3` |
+| `schema_version` | `4` |
 | `files_parsed` | Files parsed before the budget expired |
 | `secret_files_scanned` | Config files scanned for secrets without parsing |
 | `files_skipped_oversized` | Files over `--max-file-bytes` (directory walks) |
 | `files_skipped_unsupported` | Files with unrecognized extensions (directory walks) |
 | `languages` | Per-language parsed-file counts |
 | `syntax_findings` | Grammar error/missing nodes with path, language, line, column, node kind |
-| `security_findings` | AST matches with rule, severity, CWE, location, callee, optional `resolved_callee`, evidence, message, references, confidence, optional suppression |
+| `security_findings` | AST matches with rule, severity, CWE, location, callee, optional `resolved_callee`, evidence, message, references, confidence, optional `taint` (`source_line`, `source`, `variable`), optional suppression |
 | `secret_findings` | Secret matches with rule, severity, CWE, location, redacted evidence, fingerprint, message, reference, confidence, optional suppression |
 | `timed_out` | True when the budget expired before all files were scanned |
 | `seed` | Shuffle seed used for file order |
@@ -44,7 +44,9 @@ Top-level fields:
 | `confidence_scale` | Definitions of `confirmed`, `high`, `medium`, `low` |
 
 All three finding lists are sorted by path, then line, then rule ID.
-Schema: `schema/scan-v3.schema.json`.
+Schema: `schema/scan-v4.schema.json` (`schema/scan-v3.schema.json`
+is kept for reading older reports; `diff` and `--baseline` load
+any version tolerantly).
 
 ## Dependency report (schema v2)
 
@@ -106,11 +108,14 @@ Inputs load tolerantly across schema versions. Schema:
   `LOOP3R-SYNTAX` at `note` level.
 - Properties preserve `cwe`, `confidence`, `severity`, `evidence`
   (redacted for secrets), plus `callee`, `resolvedCallee`,
-  `fingerprint`, or `language` where applicable.
+  `fingerprint`, or `language` where applicable. Tainted findings
+  add a `taint` object with `sourceLine`, `source`, and
+  `variable`.
 - Suppressed findings carry `suppressions` with kind `external`
   and the reason, owner, and expiry as justification.
-- No code flows are emitted: loop3r has no taint engine, so
-  multi-hop flows would be fabricated.
+- No SARIF code flows are emitted: taint-lite reports a single
+  same-function hop as a property, and multi-hop flows would be
+  fabricated.
 
 ## Redaction and output safety
 

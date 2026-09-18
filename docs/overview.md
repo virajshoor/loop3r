@@ -39,9 +39,11 @@ These rules constrain every feature and are enforced by tests:
 Implemented and tested:
 
 - 17 embedded Tree-sitter grammars covering 16 languages plus TSX.
-- 18 exact AST-call rules with import-alias resolution for
-  Python and JavaScript/TypeScript, each with real parse-tree fixtures.
-- 3 format-validated secret rules with redacted evidence, applied to
+- 22 exact AST-call rules with import-alias resolution and
+  argument matchers for Python and JavaScript/TypeScript, each with
+  real parse-tree fixtures, plus same-function taint-lite flow
+  traces for those languages.
+- 10 format-validated secret rules with redacted evidence, applied to
   source files and config formats (`.env`, JSON, YAML, TOML, INI, and kin).
 - Lockfile inventory for Cargo and npm with explicit unsupported lists,
   exact-version advisory matching against a user-supplied snapshot,
@@ -50,10 +52,10 @@ Implemented and tested:
   redirect-location reporting.
 - Stable finding fingerprints, `diff` mode, `--baseline` gating, and
   suppressions with owner, reason, and expiry.
-- JSON reports (source schema v3, deps schema v2, web schema v1,
+- JSON reports (source schema v4, deps schema v2, web schema v1,
   diff schema v1) with checked-in schemas in `schema/` and a
   `validate` command, plus SARIF 2.1.0 output for `scan` and `web`
-  (including SARIF suppressions).
+  (including SARIF suppressions and taint properties).
 
 Not implemented: cross-function taint, advisory ingestion with
 version-range semantics, authenticated web probes, HTML/CSS/SQL

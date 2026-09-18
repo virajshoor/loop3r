@@ -21,7 +21,7 @@ cargo test
 ```
 
 Full documentation lives in [docs/](docs/README.md). Report schemas
-live in [schema/](schema/scan-v3.schema.json).
+live in [schema/](schema/scan-v4.schema.json).
 
 Exit codes: `0` no gated findings (`deps`/`diff` always `0` on
 success), `1` findings or schema errors, `2` scanner/configuration
@@ -30,20 +30,24 @@ targets are rejected. Directory symlinks and dependency/build
 directories are skipped; oversized, unsupported, and secret-only files
 are counted in the report.
 
-Core currently ships 18 exact AST-call rules with import-alias
-resolution for Python and JavaScript/TypeScript, 3 format-validated
-secret rules with redacted evidence over source and config files,
-exact lockfile inventory for Cargo and npm with optional
-exact-version advisory matching and SBOM export, and 8 passive
-loopback web checks. Every AST rule must trigger through its real
-grammar fixture in CI. Comments and strings do not match. `review`
-severity means dangerous boundary found without proven
-attacker-controlled flow. Confidence is separate: source review
-boundaries are `low`, other exact dangerous calls are `medium`,
-secrets and header/cookie observations are `high`, and observed
-credentialed CORS reflection is `confirmed`. Reports include the
-confidence scale; confirmed reflection does not establish
-sensitive-data exposure or arbitrary-origin acceptance.
+Core currently ships 22 exact AST-call rules with import-alias
+resolution and argument matchers for Python and
+JavaScript/TypeScript, same-function taint-lite flow traces for
+those languages, 10 format-validated secret rules with redacted
+evidence over source and config files, exact lockfile inventory
+for Cargo and npm with optional exact-version advisory matching
+and SBOM export, and 8 passive loopback web checks. Every AST rule
+must trigger through its real grammar fixture in CI. Comments and
+strings do not match. `review` severity means dangerous boundary
+found without proven attacker-controlled flow. Confidence is
+separate: source review boundaries are `low` (upgraded to `medium`
+when taint-lite traces a same-function flow), other exact
+dangerous calls are `medium`, secrets and header/cookie
+observations are `high`, and observed credentialed CORS reflection
+is `confirmed`. Reports include the confidence scale; confirmed
+reflection does not establish sensitive-data exposure or
+arbitrary-origin acceptance, and taint-lite flow does not
+establish attacker control.
 
 `web <loopback-url> --authorized` performs one read-only GET with redirects disabled
 and normal TLS validation. It checks XCTO, HTML CSP, HTTPS HSTS, credentialed CORS

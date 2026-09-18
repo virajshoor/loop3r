@@ -95,7 +95,7 @@ pub fn conformance_errors(report: &Value, schema: &Value) -> Vec<String> {
 
 pub fn load_schema(name: &str) -> anyhow::Result<Value> {
     let text = match name {
-        "scan" => include_str!("../schema/scan-v3.schema.json"),
+        "scan" => include_str!("../schema/scan-v4.schema.json"),
         "deps" => include_str!("../schema/deps-v2.schema.json"),
         "web" => include_str!("../schema/web-v1.schema.json"),
         "diff" => include_str!("../schema/diff-v1.schema.json"),
@@ -110,7 +110,7 @@ mod tests {
 
     fn schema(name: &str) -> Value {
         let text = match name {
-            "scan" => include_str!("../schema/scan-v3.schema.json"),
+            "scan" => include_str!("../schema/scan-v4.schema.json"),
             "deps" => include_str!("../schema/deps-v2.schema.json"),
             "web" => include_str!("../schema/web-v1.schema.json"),
             "diff" => include_str!("../schema/diff-v1.schema.json"),
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn schemas_pin_expected_versions() {
-        for (name, version) in [("scan", 3), ("deps", 2), ("web", 1), ("diff", 1)] {
+        for (name, version) in [("scan", 4), ("deps", 2), ("web", 1), ("diff", 1)] {
             let schema = schema(name);
             assert_eq!(
                 schema["$schema"],

@@ -13,6 +13,7 @@ mod scope;
 mod secrets;
 mod source;
 mod suppress;
+mod taint;
 mod web;
 
 use std::path::PathBuf;
@@ -627,6 +628,127 @@ mod tests {
     }
 
     #[test]
+    fn arg_aware_rules_fire_only_on_dangerous_arguments() {
+        let positive = [
+            (
+                LanguageId::Python,
+                "subprocess.run(cmd, shell=True)\n",
+                "CORE-PY-SUBPROCESS-SHELL",
+            ),
+            (
+                LanguageId::Python,
+                "subprocess.run(cmd, shell = True)\n",
+                "CORE-PY-SUBPROCESS-SHELL",
+            ),
+            (
+                LanguageId::Python,
+                "from subprocess import run\nrun(cmd, shell=True)\n",
+                "CORE-PY-SUBPROCESS-SHELL",
+            ),
+            (LanguageId::Python, "yaml.load(data)\n", "CORE-PY-YAML-LOAD"),
+            (
+                LanguageId::JavaScript,
+                "child_process.spawn(cmd, { shell: true });\n",
+                "CORE-JS-SPAWN-SHELL",
+            ),
+            (
+                LanguageId::JavaScript,
+                "const {spawn} = require('child_process');\nspawn(cmd, { shell: true });\n",
+                "CORE-JS-SPAWN-SHELL",
+            ),
+            (LanguageId::Php, "<?php eval($x); ?>", "CORE-PHP-EVAL"),
+        ];
+        for (language, source, expected) in positive {
+            let found = findings(language, source);
+            let matched = found
+                .iter()
+                .find(|item| item.rule_id == expected)
+                .unwrap_or_else(|| panic!("{language:?} {expected}: {found:?}"));
+            if expected == "CORE-PY-SUBPROCESS-SHELL" && source.contains("from subprocess") {
+                assert_eq!(matched.resolved_callee.as_deref(), Some("subprocess.run"));
+            }
+            if expected == "CORE-JS-SPAWN-SHELL" && source.contains("require") {
+                assert_eq!(
+                    matched.resolved_callee.as_deref(),
+                    Some("child_process.spawn")
+                );
+            }
+        }
+        let negative = [
+            (LanguageId::Python, "subprocess.run(cmd, shell=False)\n"),
+            (LanguageId::Python, "subprocess.run(cmd)\n"),
+            (
+                LanguageId::Python,
+                "yaml.load(data, Loader=yaml.SafeLoader)\n",
+            ),
+            (LanguageId::JavaScript, "child_process.spawn(cmd);\n"),
+            (
+                LanguageId::JavaScript,
+                "child_process.spawn(cmd, { shell: false });\n",
+            ),
+        ];
+        for (language, source) in negative {
+            assert!(
+                findings(language, source).is_empty(),
+                "{language:?} {source}"
+            );
+        }
+    }
+
+    #[test]
+    fn taint_flow_is_reported_and_upgrades_review_confidence() {
+        let found = findings(
+            LanguageId::Python,
+            "def f(cmd):\n    full = cmd + ' x'\n    os.system(full)\n",
+        );
+        let matched = found
+            .iter()
+            .find(|item| item.rule_id == "CORE-PY-SHELL")
+            .unwrap();
+        assert_eq!(serde_json::to_value(matched.confidence).unwrap(), "medium");
+        let taint = matched.taint.as_ref().unwrap();
+        assert_eq!(taint.variable, "full");
+        assert!(taint.source.contains("parameter `cmd`"), "{}", taint.source);
+
+        let found = findings(LanguageId::Python, "def f(cmd):\n    os.system('ls')\n");
+        let matched = found
+            .iter()
+            .find(|item| item.rule_id == "CORE-PY-SHELL")
+            .unwrap();
+        assert_eq!(serde_json::to_value(matched.confidence).unwrap(), "low");
+        assert!(matched.taint.is_none());
+
+        let found = findings(LanguageId::Python, "def f(cmd):\n    eval(cmd)\n");
+        let matched = found
+            .iter()
+            .find(|item| item.rule_id == "CORE-PY-EVAL")
+            .unwrap();
+        assert_eq!(serde_json::to_value(matched.confidence).unwrap(), "medium");
+        assert!(matched.taint.is_some());
+
+        let found = findings(
+            LanguageId::Python,
+            "def f(cmd):\n    safe = shlex.quote(cmd)\n    os.system(safe)\n",
+        );
+        let matched = found
+            .iter()
+            .find(|item| item.rule_id == "CORE-PY-SHELL")
+            .unwrap();
+        assert!(matched.taint.is_none());
+
+        let found = findings(
+            LanguageId::JavaScript,
+            "function f(cmd) { child_process.exec(cmd); }\n",
+        );
+        let matched = found
+            .iter()
+            .find(|item| item.rule_id == "CORE-JS-SHELL")
+            .unwrap();
+        assert_eq!(serde_json::to_value(matched.confidence).unwrap(), "medium");
+        assert!(matched.taint.is_some());
+    }
+
+    #[test]
     fn every_ast_rule_has_a_real_parse_tree_fixture() {
         let fixtures = [
             (
@@ -635,10 +757,16 @@ mod tests {
             ),
             (
                 LanguageId::Python,
-                "eval(x)\nos.system(x)\npickle.loads(x)\n",
+                "eval(x)\nos.system(x)\npickle.loads(x)\nsubprocess.run(cmd, shell=True)\nyaml.load(data)\n",
             ),
-            (LanguageId::JavaScript, "eval(x);\nchild_process.exec(x);\n"),
-            (LanguageId::Php, "<?php system($x); unserialize($x); ?>"),
+            (
+                LanguageId::JavaScript,
+                "eval(x);\nchild_process.exec(x);\nchild_process.spawn(cmd, { shell: true });\n",
+            ),
+            (
+                LanguageId::Php,
+                "<?php system($x); unserialize($x); eval($x); ?>",
+            ),
             (LanguageId::Ruby, "eval(x)\nsystem(x)\nMarshal.load(x)\n"),
             (
                 LanguageId::Rust,
@@ -688,7 +816,7 @@ mod tests {
     #[test]
     fn core_rule_catalog_is_well_formed() {
         let rules = crate::core::load_ast_rules().unwrap();
-        assert_eq!(rules.len(), 18);
+        assert_eq!(rules.len(), 22);
     }
 
     #[test]

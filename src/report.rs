@@ -65,6 +65,7 @@ pub struct SecurityFinding {
     pub message: String,
     pub references: Vec<String>,
     pub confidence: Confidence,
+    pub taint: Option<crate::taint::TaintFlow>,
     pub suppressed: Option<SuppressedBy>,
 }
 

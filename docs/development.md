@@ -30,9 +30,10 @@ request.
   confidence, filesystem scope with private output, secrets redaction,
   dependency inventory, skip counts, baseline/diff/suppression flows,
   and real TCP loopback probes (no HTTP mocks).
-- Focused unit tests live with their modules (`imports`, `secrets`,
-  `deps`, `advisory`, `sbom`, `sarif`, `diff`, `suppress`, `schema`,
-  `web`, `fingerprint`), including malformed and truncated inputs.
+- Focused unit tests live with their modules (`core`, `imports`,
+  `taint`, `secrets`, `deps`, `advisory`, `sbom`, `sarif`, `diff`,
+  `suppress`, `schema`, `web`, `fingerprint`), including malformed
+  and truncated inputs.
 - `src/schema.rs` checks every checked-in JSON schema against a real
   generated report, so schema drift fails the suite.
 - Fixture secrets are format-valid but fictitious (for example an
@@ -43,8 +44,8 @@ request.
 
 1. Add the rule to `core/ast-rules.json` with a unique ID, title,
    `high` or `review` severity, `CWE-NNN` code, non-empty language
-   list, non-empty callee list, remediation message, and HTTPS
-   references.
+   list, non-empty callee list, optional `args_any`/`args_none`
+   matchers, remediation message, and HTTPS references.
 2. Confirm the callee spelling against the real Tree-sitter node
    text for that language (check `callee()` and `is_call()` in
    `src/source.rs`).
@@ -53,7 +54,8 @@ request.
    languages or call shapes, to
    `language_specific_calls_are_structural`.
 4. Add a negative case where confusion is plausible (comment/string,
-   similarly named callee such as `re.compile` vs `compile`).
+   similarly named callee such as `re.compile` vs `compile`, safe
+   argument spellings such as `shell=False` for arg-aware rules).
 5. Update `docs/rules.md` and the rule count in `README.md`.
 
 Rules without real-grammar fixtures are rejected by convention and

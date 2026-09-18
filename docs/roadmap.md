@@ -23,11 +23,18 @@ were implemented and documented).
 - Checked-in JSON schemas with conformance tests and a `validate`
   command.
 - Multi-OS CI workflow (Ubuntu, macOS, Windows).
+- Argument-aware AST rules (22 rules; safe spellings such as
+  `shell=False` and `SafeLoader` do not match).
+- Same-function taint-lite traces for Python and JS/TS with
+  source schema v4.
+- 10 provider secret validators (PEM, AWS, GitHub, Slack
+  token/webhook, Stripe, OpenAI, GitLab, PyPI, JWT).
 
 ## P1: production source analysis
 
 - Structural rule engine: compiled Tree-sitter queries per grammar,
-  with fixture-backed schema validation.
+  with fixture-backed schema validation (argument matchers and
+  taint-lite shipped as the first step).
 - Import resolution for remaining languages (Java, C#, Go, Rust,
   Ruby, PHP, and the rest).
 - Typed data flow per language adapter (scopes, CFG, sources,
@@ -43,8 +50,8 @@ were implemented and documented).
 - Advisory ingestion (OSV/GHSA/RustSec) with attribution, checksums,
   withdrawals, and ecosystem-correct version-range semantics; KEV as
   priority metadata only; signed atomic snapshot updates with rollback.
-- More provider secret validators and AST string/comment-node
-  targeting.
+- AST string/comment-node targeting for secrets (10 provider
+  validators shipped; remaining work is node-targeted scanning).
 
 ## P1: website and API analysis
 

@@ -162,6 +162,16 @@ pub fn source_to_sarif(report: &Report) -> Value {
         if let Some(resolved) = &finding.resolved_callee {
             properties.insert("resolvedCallee".to_owned(), Value::String(resolved.clone()));
         }
+        if let Some(taint) = &finding.taint {
+            properties.insert(
+                "taint".to_owned(),
+                Value::Object(Map::from_iter([
+                    ("sourceLine".to_owned(), Value::from(taint.source_line)),
+                    ("source".to_owned(), Value::String(taint.source.clone())),
+                    ("variable".to_owned(), Value::String(taint.variable.clone())),
+                ])),
+            );
+        }
         results.push(result(
             &finding.rule_id,
             &finding.severity,
@@ -313,6 +323,7 @@ mod tests {
             message: "Message".to_owned(),
             references: vec!["https://example.invalid/rule".to_owned()],
             confidence: Confidence::Medium,
+            taint: None,
             suppressed: None,
         }
     }
@@ -320,7 +331,7 @@ mod tests {
     #[test]
     fn maps_source_findings_with_levels_and_deduped_rules() {
         let report = Report {
-            schema_version: 3,
+            schema_version: 4,
             files_parsed: 1,
             secret_files_scanned: 0,
             files_skipped_oversized: 0,
@@ -394,7 +405,7 @@ mod tests {
     fn sarif_evidence_round_trips_through_json_escaping() {
         let tricky = "<script>alert('x') & \"y\"</script>";
         let report = Report {
-            schema_version: 3,
+            schema_version: 4,
             files_parsed: 1,
             secret_files_scanned: 0,
             files_skipped_oversized: 0,
@@ -463,7 +474,7 @@ mod tests {
     #[test]
     fn empty_reports_yield_empty_results() {
         let report = Report {
-            schema_version: 3,
+            schema_version: 4,
             files_parsed: 0,
             secret_files_scanned: 0,
             files_skipped_oversized: 0,

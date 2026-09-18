@@ -2,9 +2,9 @@
 
 loop3r ships three rule families. AST rules come from the embedded
 `core/ast-rules.json` catalog and are validated at startup (duplicate
-IDs, severity, CWE format, non-empty languages and callees, and
-HTTPS-only references are all rejected). Secret and web rules are
-compiled into the binary.
+IDs, severity, CWE format, non-empty languages and callees,
+well-formed argument matchers, and HTTPS-only references are all
+rejected). Secret and web rules are compiled into the binary.
 
 ## Severity
 
@@ -25,17 +25,25 @@ Confidence is independent of severity and is defined in every report:
 | `low` | Security boundary needs review; vulnerability not established |
 
 Mapping: AST rules with `review` severity report `low`, other AST
-rules report `medium`. Secret rules report `high`. Web rules report
-`high`, except observed credentialed CORS reflection, which reports
-`confirmed`. Confirmed reflection proves the header behavior only; it
-does not establish sensitive-data exposure or arbitrary-origin
-acceptance.
+rules report `medium`. When taint-lite traces a same-function flow
+from a parameter or input call into the sink, a `review` finding is
+upgraded to `medium` and carries its `taint` trace; `high` findings
+stay `medium` but also carry the trace. Secret rules report `high`.
+Web rules report `high`, except observed credentialed CORS
+reflection, which reports `confirmed`. Confirmed reflection proves
+the header behavior only; it does not establish sensitive-data
+exposure or arbitrary-origin acceptance.
 
-## AST rules (18)
+## AST rules (22)
 
 Matching is exact and structural: the callee text must equal a listed
 callee after whitespace removal, and only real call nodes match, so
-comments and string literals never trigger.
+comments and string literals never trigger. Rules may additionally
+constrain the argument list: `args_any` requires at least one
+whitespace-insensitive substring (for example `shell=True`), and
+`args_none` forbids substrings (for example `SafeLoader`). Safe
+spellings such as `shell=False` or
+`yaml.load(data, Loader=yaml.SafeLoader)` therefore do not match.
 
 For Python and JavaScript/TypeScript/TSX, import aliases resolve to
 canonical names before matching: `from os import system as run`
@@ -47,16 +55,30 @@ and relative modules never resolve. All other languages match
 written callees only, and `resolved_callee` is absent when no alias
 applied.
 
+Taint-lite adds same-function data-flow context for Python and
+JavaScript/TypeScript/TSX only. Function parameters plus `input()`,
+`sys.argv`, `process.argv`, and request-object reads are sources;
+assignments propagate taint through string building and wrappers,
+and `shlex.quote` sanitizes. When a tainted variable reaches a
+matched sink, the finding records `source_line`, a `source`
+description, and the `variable` name. This proves local flow, not
+attacker control: there is no cross-function or cross-file tracking,
+and other languages never report taint.
+
 | ID | Title | Severity | CWE | Languages | Callees |
 |---|---|---|---|---|---|
 | CORE-C-BOUNDS | Unbounded C string operation | high | CWE-120 | c | `gets`, `strcpy`, `strcat`, `sprintf` |
 | CORE-C-SHELL | C shell command sink | review | CWE-78 | c | `system`, `popen` |
 | CORE-PY-EVAL | Python dynamic code sink | high | CWE-95 | python | `eval`, `exec`, `compile` |
 | CORE-PY-SHELL | Python shell command sink | review | CWE-78 | python | `os.system`, `os.popen` |
-| CORE-PY-DESERIALIZE | Python object deserialization sink | high | CWE-502 | python | `pickle.load`, `pickle.loads`, `dill.load`, `dill.loads`, `yaml.load` |
+| CORE-PY-SUBPROCESS-SHELL | Python subprocess with shell=True | high | CWE-78 | python | `subprocess.call`, `subprocess.run`, `subprocess.Popen`, `subprocess.check_output`, `subprocess.check_call` (args contain `shell=True`) |
+| CORE-PY-DESERIALIZE | Python object deserialization sink | high | CWE-502 | python | `pickle.load`, `pickle.loads`, `dill.load`, `dill.loads` |
+| CORE-PY-YAML-LOAD | Python YAML load without SafeLoader | high | CWE-502 | python | `yaml.load` (args lack `SafeLoader`) |
 | CORE-JS-EVAL | JavaScript dynamic code sink | high | CWE-95 | javascript, typescript, tsx | `eval`, `Function` |
 | CORE-JS-SHELL | Node.js shell command sink | review | CWE-78 | javascript, typescript, tsx | `child_process.exec`, `child_process.execSync` |
+| CORE-JS-SPAWN-SHELL | Node.js spawn with shell:true | review | CWE-78 | javascript, typescript, tsx | `child_process.spawn`, `child_process.spawnSync`, `child_process.execFile`, `child_process.execFileSync` (args contain `shell:true`) |
 | CORE-PHP-SHELL | PHP shell command sink | review | CWE-78 | php | `system`, `exec`, `shell_exec`, `passthru`, `popen`, `proc_open` |
+| CORE-PHP-EVAL | PHP eval sink | high | CWE-95 | php | `eval` |
 | CORE-PHP-DESERIALIZE | PHP object deserialization sink | high | CWE-502 | php | `unserialize` |
 | CORE-RB-EVAL | Ruby dynamic code sink | high | CWE-95 | ruby | `eval`, `class_eval`, `instance_eval` |
 | CORE-RB-SHELL | Ruby shell command sink | review | CWE-78 | ruby | `system`, `exec`, `spawn` |
@@ -71,7 +93,7 @@ applied.
 Every rule above has a positive fixture parsed by its real grammar in
 the test suite. HTML, CSS, and SQL have grammars but no AST rules yet.
 
-## Secret rules (3)
+## Secret rules (10)
 
 Secrets are detected by strict format validators over raw file bytes
 in every scoped source file. There is no entropy scoring: entropy
@@ -84,6 +106,13 @@ characters of the matched material.
 | SECRET-PEM-PRIVATE-KEY | Private key material in source | high | CWE-798 | `-----BEGIN … PRIVATE KEY-----` … base64 body … matching `-----END …` footer within 16 KB |
 | SECRET-AWS-ACCESS-KEY | AWS access key ID in source | high | CWE-798 | `AKIA` followed by exactly 16 uppercase letters or digits, with non-alphanumeric boundaries |
 | SECRET-GITHUB-TOKEN | GitHub token in source | high | CWE-798 | `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` with 36+ alphanumerics, or `github_pat_` with 20+ word characters |
+| SECRET-SLACK-TOKEN | Slack token in source | high | CWE-798 | `xoxb-`/`xoxp-`/`xoxa-`/`xoxr-`/`xoxs-` with 20+ body characters and another `-` inside |
+| SECRET-STRIPE-KEY | Stripe API key in source | high | CWE-798 | `sk_live_`/`rk_live_`/`sk_test_`/`rk_test_` with 16+ alphanumerics |
+| SECRET-OPENAI-KEY | OpenAI API key in source | high | CWE-798 | `sk-` with 32+ alphanumerics, dashes, or underscores |
+| SECRET-GITLAB-TOKEN | GitLab token in source | high | CWE-798 | `glpat-` with 20+ word characters or dashes |
+| SECRET-PYPI-TOKEN | PyPI token in source | high | CWE-798 | `pypi-` with 20+ word characters or dashes |
+| SECRET-SLACK-WEBHOOK | Slack webhook URL in source | high | CWE-798 | `https://hooks.slack.com/services/` plus three `/`-separated segments of 8+ token characters |
+| SECRET-GENERIC-JWT | JWT-shaped credential in source | high | CWE-798 | `eyJ…` with three dot-separated base64url segments of 10+ characters |
 
 Documented examples are negatives: matches near `example`,
 `placeholder`, `fake`, `dummy`, `sample`, or `mock` (including

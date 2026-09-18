@@ -42,7 +42,7 @@ Self-scan of this repository:
 ```
 
 ```text
-18 files parsed (51 secret-only scanned); 0 syntax findings; 0 security findings; 0 secret findings
+19 files parsed (83 secret-only scanned); 0 syntax findings; 0 security findings; 0 secret findings
 skipped 0 oversized and 20 unsupported files
 ```
 

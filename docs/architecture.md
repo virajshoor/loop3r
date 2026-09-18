@@ -10,6 +10,7 @@
 | `core.rs` | Embedded AST rule catalog loading and validation |
 | `source.rs` | Parse loop, AST inspection, secrets fan-out, report assembly |
 | `imports.rs` | Import-alias collection and callee resolution (Python, JS/TS) |
+| `taint.rs` | Same-function taint-lite analysis for Python and JS/TS |
 | `secrets.rs` | Byte-oriented secret validators, redaction, fingerprints |
 | `deps.rs` | Lockfile discovery and inventory parsers |
 | `advisory.rs` | Exact-version advisory matching against a supplied snapshot |
@@ -38,8 +39,10 @@ There are no import cycles.
    expiry degrades fairly; a fixed `--seed` reproduces the order exactly.
 4. For each file within budget: read bytes, run secret validators on
    the raw bytes, parse with the language grammar, collect import
-   aliases, and walk the tree iteratively (no recursion) collecting
-   syntax errors and exact-call matches against resolved callees.
+   aliases, build the taint-lite index (Python and JS/TS only), and
+   walk the tree iteratively (no recursion) collecting syntax
+   errors and exact-call matches against resolved callees plus
+   argument matchers and taint traces.
 5. Scan secrets-only files for secrets without parsing.
 6. Apply suppressions, then the baseline summary, when requested.
 7. Sort every finding list deterministically by path, line, and rule
@@ -79,17 +82,37 @@ in `callee`; the canonical form appears in `resolved_callee` only
 when an alias applied.
 
 Matching is exact after whitespace removal: the canonical callee must
-equal a rule callee. Shell, HTML, CSS, and SQL have no sink semantics
-beyond this: HTML/CSS/SQL parse for syntax coverage only.
+equal a rule callee. Rules with `args_any`/`args_none` additionally
+require or forbid whitespace-insensitive substrings in the argument
+list, so safe spellings (`shell=False`, `SafeLoader`) do not match.
+Shell, HTML, CSS, and SQL have no sink semantics beyond this:
+HTML/CSS/SQL parse for syntax coverage only.
 
 Evidence is the matched node text truncated to 160 characters.
+
+## Taint-lite
+
+For Python and JavaScript/TypeScript/TSX, `taint.rs` builds one
+scope per function before matching: parameters plus `input()`,
+`sys.argv`, `process.argv`, and request-object reads seed taint,
+assignments propagate it through derived values (bounded fixpoint,
+`shlex.quote` sanitizes), and nested functions are skipped. When a
+tainted variable reaches a matched sink, the finding records the
+source line, a source description, and the variable name, and
+`review` findings upgrade from `low` to `medium` confidence. This
+is local flow only — never cross-function, cross-file, or proof of
+attacker control — and fingerprints exclude it, so baselines never
+churn on taint alone.
 
 ## Secrets
 
 Secret validators scan raw bytes, so they work even when a file does
 not parse. PEM blocks require a `PRIVATE KEY` header and matching
-footer within 16 KB with a base64-only body. AWS and GitHub patterns
-require strict lengths and token boundaries. Any match near a
+footer within 16 KB with a base64-only body. AWS, GitHub, Slack,
+Stripe, OpenAI, GitLab, and PyPI patterns require strict prefixes,
+lengths, and token boundaries; Slack webhooks require the full
+services URL with three long segments; JWT requires three long
+dot-separated segments starting with `eyJ`. Any match near a
 documentation marker (`example`, `placeholder`, `fake`, `dummy`,
 `sample`, `mock`) is treated as a negative. Findings store a
 redacted summary plus an FNV-1a fingerprint, never the secret.

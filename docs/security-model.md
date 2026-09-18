@@ -23,7 +23,9 @@
 ## What loop3r does not do
 
 - It does not confirm exploitability. AST findings prove a
-  dangerous call exists, not that attackers reach it.
+  dangerous call exists, not that attackers reach it. Taint-lite
+  traces prove same-function data flow from a parameter or input
+  call, which is weaker than attacker control.
 - It does not validate credentials. Suspected secrets are reported
   from shape alone and are never sent to provider APIs.
 - It does not ship advisories. `--advisory-db` matches exact

@@ -64,6 +64,28 @@ fn callee_matches(actual: &str, expected: &str) -> bool {
     actual == expected
 }
 
+fn compacted_args(node: tree_sitter::Node<'_>, source: &[u8], language: LanguageId) -> String {
+    if language == LanguageId::Shell {
+        return node
+            .utf8_text(source)
+            .unwrap_or("")
+            .chars()
+            .filter(|ch| !ch.is_whitespace())
+            .take(4096)
+            .collect();
+    }
+    let Some(arguments) = node.child_by_field_name("arguments") else {
+        return String::new();
+    };
+    arguments
+        .utf8_text(source)
+        .unwrap_or("")
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .take(4096)
+        .collect()
+}
+
 #[cfg_attr(test, allow(dead_code))]
 fn inspect_tree(
     node: tree_sitter::Node<'_>,
@@ -76,6 +98,7 @@ fn inspect_tree(
 ) {
     let mut stack = vec![node];
     let aliases = crate::imports::collect_aliases(node, source, language);
+    let taint_index = crate::taint::analyze(node, source, language);
     while let Some(current) = stack.pop() {
         if current.is_error() || current.is_missing() {
             let point = current.start_position();
@@ -103,8 +126,26 @@ fn inspect_tree(
                 {
                     continue;
                 }
+                if !rule.args_any.is_empty() || !rule.args_none.is_empty() {
+                    let args = compacted_args(current, source, language);
+                    if !rule.matches_args(&args) {
+                        continue;
+                    }
+                }
                 let point = current.start_position();
                 let raw = current.utf8_text(source).unwrap_or("<invalid UTF-8>");
+                let sink_args = current
+                    .child_by_field_name("arguments")
+                    .and_then(|arguments| arguments.utf8_text(source).ok())
+                    .unwrap_or("");
+                let taint = taint_index.flow_for_sink(point.row + 1, sink_args);
+                let confidence = if taint.is_some() {
+                    Confidence::Medium
+                } else if rule.severity == "review" {
+                    Confidence::Low
+                } else {
+                    Confidence::Medium
+                };
                 security.push(SecurityFinding {
                     rule_id: rule.id.clone(),
                     title: rule.title.clone(),
@@ -122,11 +163,8 @@ fn inspect_tree(
                     evidence: raw.chars().take(160).collect(),
                     message: rule.message.clone(),
                     references: rule.references.clone(),
-                    confidence: if rule.severity == "review" {
-                        Confidence::Low
-                    } else {
-                        Confidence::Medium
-                    },
+                    confidence,
+                    taint,
                     suppressed: None,
                 });
             }
@@ -208,7 +246,7 @@ pub fn scan(
         (&a.path, a.line, a.column, &a.node_kind).cmp(&(&b.path, b.line, b.column, &b.node_kind))
     });
     Ok(Report {
-        schema_version: 3,
+        schema_version: 4,
         files_parsed,
         secret_files_scanned,
         files_skipped_oversized: discovery.skipped_oversized,

@@ -11,8 +11,41 @@ pub struct AstRule {
     pub cwe: String,
     pub languages: Vec<LanguageId>,
     pub callees: Vec<String>,
+    #[serde(default)]
+    pub args_any: Vec<String>,
+    #[serde(default)]
+    pub args_none: Vec<String>,
     pub message: String,
     pub references: Vec<String>,
+}
+
+pub fn compact_args(text: &str) -> String {
+    text.chars().filter(|ch| !ch.is_whitespace()).collect()
+}
+
+impl AstRule {
+    pub fn matches_args(&self, compacted_args: &str) -> bool {
+        if !self.args_any.is_empty() {
+            let mut hit = false;
+            for needle in &self.args_any {
+                let compacted_needle = compact_args(needle);
+                if !compacted_needle.is_empty() && compacted_args.contains(&compacted_needle) {
+                    hit = true;
+                    break;
+                }
+            }
+            if !hit {
+                return false;
+            }
+        }
+        for needle in &self.args_none {
+            let compacted_needle = compact_args(needle);
+            if !compacted_needle.is_empty() && compacted_args.contains(&compacted_needle) {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 pub fn load_ast_rules() -> Result<Vec<AstRule>> {
@@ -44,6 +77,12 @@ fn validate(rules: &[AstRule]) -> Result<()> {
         if rule.callees.is_empty() {
             anyhow::bail!("rule {} has no callees", rule.id);
         }
+        for needle in rule.args_any.iter().chain(rule.args_none.iter()) {
+            let compacted = compact_args(needle);
+            if compacted.is_empty() || compacted.len() > 128 {
+                anyhow::bail!("rule {} has an invalid args matcher", rule.id);
+            }
+        }
         if rule
             .references
             .iter()
@@ -53,4 +92,46 @@ fn validate(rules: &[AstRule]) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule_with(args_any: Vec<&str>, args_none: Vec<&str>) -> AstRule {
+        AstRule {
+            id: "TEST".to_owned(),
+            title: "t".to_owned(),
+            severity: "high".to_owned(),
+            cwe: "CWE-78".to_owned(),
+            languages: vec![LanguageId::Python],
+            callees: vec!["f".to_owned()],
+            args_any: args_any.into_iter().map(str::to_owned).collect(),
+            args_none: args_none.into_iter().map(str::to_owned).collect(),
+            message: "m".to_owned(),
+            references: vec!["https://example.invalid".to_owned()],
+        }
+    }
+
+    #[test]
+    fn args_matching_ignores_whitespace() {
+        let rule = rule_with(vec!["shell = True"], vec![]);
+        assert!(rule.matches_args("(cmd,shell=True)"));
+        assert!(!rule.matches_args("(cmd,shell=False)"));
+        assert!(!rule.matches_args("(cmd)"));
+    }
+
+    #[test]
+    fn args_none_blocks_matches() {
+        let rule = rule_with(vec![], vec!["SafeLoader"]);
+        assert!(rule.matches_args("(data)"));
+        assert!(!rule.matches_args("(data,Loader=yaml.SafeLoader)"));
+    }
+
+    #[test]
+    fn empty_matchers_match_everything() {
+        let rule = rule_with(vec![], vec![]);
+        assert!(rule.matches_args(""));
+        assert!(rule.matches_args("(anything)"));
+    }
 }
