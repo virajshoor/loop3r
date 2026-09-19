@@ -1,3 +1,15 @@
+//! Loopback web probe: one read-only GET plus passive header checks.
+//!
+//! `web` exists for local security smoke-testing (a dev server on
+//! 127.0.0.1), NOT for scanning the internet: non-loopback hosts,
+//! credentials in URLs, and non-HTTP(S) schemes are all refused before any
+//! socket opens. The probe itself is a single GET with redirects DISABLED
+//! (a 3xx `Location` is reported, sanitized, but never followed —
+//! following it would issue unconsented second requests), a distinctive
+//! `Origin: https://loop3r.invalid` for the CORS reflection test, and a
+//! bounded timeout. Findings derive SOLELY from the status line and
+//! response headers; bodies are never read, parsed, or stored.
+
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -5,17 +17,36 @@ use reqwest::header::{HeaderMap, HeaderName};
 
 use crate::report::{Confidence, WebFinding, WebReport, confidence_scale};
 
+/// Extracts one header value as an owned string, or `None` when absent or
+/// non-UTF-8. Non-UTF-8 headers are treated as absent (no finding either
+/// way) rather than erroring — a weird byte sequence is not evidence.
 fn header(headers: &HeaderMap, name: HeaderName) -> Option<String> {
     headers.get(name)?.to_str().ok().map(str::to_owned)
 }
 
+/// Parsed `Set-Cookie` attributes relevant to the cookie-flag rules.
+/// Only the name (for evidence) and the three graded flags are kept.
 struct CookieFlags {
+    /// Cookie name, control-char-stripped and capped at 64 chars for
+    /// evidence safety (header bytes reach reports, so they are bounded).
     name: String,
+    /// Whether the `HttpOnly` attribute was present.
     httponly: bool,
+    /// Whether the `Secure` attribute was present.
     secure: bool,
+    /// Whether a valid `SameSite=Lax/Strict/None` attribute was present.
     samesite: bool,
 }
 
+/// Parses one `Set-Cookie` header per RFC semantics.
+///
+/// The first `;`-segment is ALWAYS the cookie (`name=value`) and can never
+/// satisfy an attribute check — this is what stops a cookie VALUE like
+/// `trick=httponly-secure` from faking flags. Remaining segments split on
+/// the first `=` into case-insensitive keys with optional (possibly quoted)
+/// values; `SameSite` additionally requires a valid value (`Lax`, `Strict`,
+/// or `None` — `Sometimes` does not count). Empty headers, blank names, and
+/// `=value` (no name) return `None` and are skipped, not findings.
 fn parse_set_cookie(header: &str) -> Option<CookieFlags> {
     let mut segments = header.split(';');
     let first = segments.next()?.trim();
@@ -64,6 +95,22 @@ fn parse_set_cookie(header: &str) -> Option<CookieFlags> {
     Some(flags)
 }
 
+/// Probes one loopback URL and reports passive header/cookie observations.
+///
+/// Guard rails first: timeout must be 1–120s (unbounded waits hang CI; the
+/// 120s ceiling matches the scan budget order of magnitude), URL must parse
+/// as http/https with NO credentials, and the host must be loopback
+/// (`localhost`, IPv4 127/8, or IPv6 ::1 — matched via the `url` crate's
+/// typed host, not string comparison, so `localhost.evil.com` fails).
+///
+/// The client identifies as `loop3r/<version>` (polite scanning) and the
+/// single GET carries `Origin: https://loop3r.invalid` — an unroutable test
+/// origin, so any reflection of it in `Access-Control-Allow-Origin` proves
+/// the server echoes arbitrary origins. Checks, in order: XCTO `nosniff`,
+/// CSP on HTML responses, HSTS on HTTPS responses, credentialed CORS
+/// reflection (the only `Confirmed` finding in the tool — and even it proves
+/// header behaviour only, not data exposure), per-cookie HttpOnly/Secure/
+/// SameSite flags, and the Set-Cookie-without-Cache-Control observation.
 pub fn web_scan(raw_url: &str, timeout_seconds: u64) -> Result<WebReport> {
     if timeout_seconds == 0 || timeout_seconds > 120 {
         bail!("timeout-seconds must be between 1 and 120");
@@ -83,6 +130,7 @@ pub fn web_scan(raw_url: &str, timeout_seconds: u64) -> Result<WebReport> {
         bail!("web checks currently require explicit loopback URL");
     }
     let client = reqwest::blocking::Client::builder()
+        // Redirects disabled: the Location is REPORTED, never followed.
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(timeout_seconds))
         .user_agent(concat!("loop3r/", env!("CARGO_PKG_VERSION")))
@@ -97,6 +145,8 @@ pub fn web_scan(raw_url: &str, timeout_seconds: u64) -> Result<WebReport> {
     let status = response.status().as_u16();
     let headers = response.headers();
     let mut findings = Vec::new();
+    // XCTO must be exactly `nosniff` (case-insensitive); any other value or
+    // absence equally fails to stop MIME sniffing.
     if !header(headers, reqwest::header::X_CONTENT_TYPE_OPTIONS)
         .is_some_and(|value| value.eq_ignore_ascii_case("nosniff"))
     {
@@ -109,6 +159,8 @@ pub fn web_scan(raw_url: &str, timeout_seconds: u64) -> Result<WebReport> {
             confidence: Confidence::High,
         });
     }
+    // CSP is graded only for HTML responses: demanding it on JSON or images
+    // would be noise, and `starts_with("text/html")` tolerates charsets.
     let html = header(headers, reqwest::header::CONTENT_TYPE)
         .is_some_and(|value| value.to_ascii_lowercase().starts_with("text/html"));
     if html && !headers.contains_key("content-security-policy") {
@@ -121,6 +173,8 @@ pub fn web_scan(raw_url: &str, timeout_seconds: u64) -> Result<WebReport> {
             confidence: Confidence::High,
         });
     }
+    // HSTS only applies to HTTPS responses — grading plain-HTTP loopback
+    // (the common dev case) would punish the tool's own target audience.
     if url.scheme() == "https" && !headers.contains_key(reqwest::header::STRICT_TRANSPORT_SECURITY)
     {
         findings.push(WebFinding {
@@ -132,6 +186,9 @@ pub fn web_scan(raw_url: &str, timeout_seconds: u64) -> Result<WebReport> {
             confidence: Confidence::High,
         });
     }
+    // Credentialed CORS reflection: BOTH the exact test origin echoed back
+    // AND `Allow-Credentials: true` are required. Note the origin comparison
+    // is case-SENSITIVE (origins are exact) while the boolean is not.
     let reflected_origin = header(headers, reqwest::header::ACCESS_CONTROL_ALLOW_ORIGIN)
         .is_some_and(|value| value == "https://loop3r.invalid");
     let credentials = header(headers, reqwest::header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
@@ -146,6 +203,9 @@ pub fn web_scan(raw_url: &str, timeout_seconds: u64) -> Result<WebReport> {
             confidence: Confidence::Confirmed,
         });
     }
+    // Every Set-Cookie is graded independently (one cookie's flags say
+    // nothing about another's); unparseable headers are skipped, and the
+    // `Secure` rule only applies to HTTPS responses.
     let mut saw_cookie = false;
     for cookie in headers.get_all(reqwest::header::SET_COOKIE) {
         let Ok(cookie) = cookie.to_str() else {
@@ -186,6 +246,8 @@ pub fn web_scan(raw_url: &str, timeout_seconds: u64) -> Result<WebReport> {
             });
         }
     }
+    // Responses that set cookies without ANY Cache-Control risk storing
+    // authenticated content in shared caches.
     if saw_cookie && !headers.contains_key(reqwest::header::CACHE_CONTROL) {
         findings.push(WebFinding {
             rule_id: "WEB-CACHE",
@@ -201,6 +263,8 @@ pub fn web_scan(raw_url: &str, timeout_seconds: u64) -> Result<WebReport> {
         url: url.to_string(),
         status,
         duration_ms: started.elapsed().as_millis(),
+        // 3xx Location is sanitized (control chars stripped, 200-char cap —
+        // header bytes are attacker-influenced) and reported, never followed.
         redirect: if (300..400).contains(&status) {
             header(headers, reqwest::header::LOCATION).map(|location| {
                 location
@@ -221,6 +285,7 @@ pub fn web_scan(raw_url: &str, timeout_seconds: u64) -> Result<WebReport> {
 mod tests {
     use super::*;
 
+    /// Flag keys match case-insensitively and `SameSite=Lax` validates.
     #[test]
     fn parses_cookie_attributes_case_insensitively() {
         let flags = parse_set_cookie("session=abc; httponly; SECURE; samesite=Lax").unwrap();
@@ -228,6 +293,8 @@ mod tests {
         assert!(flags.httponly && flags.secure && flags.samesite);
     }
 
+    /// Attribute-looking text inside the cookie VALUE cannot set flags —
+    /// the anti-spoofing test for the first-segment rule.
     #[test]
     fn cookie_values_cannot_fake_attributes() {
         let flags = parse_set_cookie("trick=httponly-samesite-secure; Path=/").unwrap();
@@ -235,12 +302,15 @@ mod tests {
         assert!(!flags.httponly && !flags.secure && !flags.samesite);
     }
 
+    /// Unknown `SameSite` values are treated as absent, not as a pass.
     #[test]
     fn rejects_invalid_samesite_value() {
         let flags = parse_set_cookie("a=b; SameSite=Sometimes").unwrap();
         assert!(!flags.samesite);
     }
 
+    /// Quoted `SameSite` values unwrap correctly, and unrelated attributes
+    /// with commas (`Expires=Wed, 21 Oct …`) do not confuse the parser.
     #[test]
     fn accepts_quoted_samesite_and_ignores_expires() {
         let flags =
@@ -249,6 +319,8 @@ mod tests {
         assert!(flags.samesite);
     }
 
+    /// Empty, blank, and nameless cookie headers are skipped (`None`), not
+    /// findings and not panics.
     #[test]
     fn rejects_empty_cookie_headers() {
         assert!(parse_set_cookie("").is_none());

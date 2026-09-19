@@ -1,3 +1,13 @@
+//! Suppressions: audited, expiring acceptances that annotate — never delete.
+//!
+//! A suppression file lists `{rule_id, path glob, reason, owner, expires}`
+//! entries. Matching findings gain a `suppressed` justification and stop
+//! gating the exit code, but stay in the report and in SARIF. The design
+//! goal is to make silent findings impossible: every field is mandatory
+//! (anonymous/undated acceptances are rejected), expiries are validated and
+//! reported, and malformed files abort the scan rather than scanning
+//! unsuppressed without telling the caller.
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,31 +19,60 @@ use serde::Deserialize;
 
 use crate::report::{Report, SuppressedBy, SuppressionReport};
 
+/// One suppression entry as written in the JSON file.
+///
+/// All fields are required at the serde level AND re-validated for
+/// non-emptiness in [`load`]: a present-but-empty reason is as useless as a
+/// missing one for audit purposes.
 #[derive(Debug, Deserialize)]
 struct SuppressionEntry {
+    /// Rule ID this entry applies to (exact match, e.g. `CORE-PY-EVAL`).
     rule_id: String,
+    /// Path glob matched against both the stored and target-relative path.
     path: String,
+    /// Why the finding is accepted (review note, ticket, rationale).
     reason: String,
+    /// Person or team accountable for the acceptance.
     owner: String,
+    /// `YYYY-MM-DD` expiry; past dates are reported and ignored.
     expires: String,
 }
 
+/// Top-level suppression file. `suppressions` defaults to empty so `{}` is a
+/// valid (vacuous) file rather than a parse error.
 #[derive(Debug, Deserialize)]
 struct SuppressionFile {
     #[serde(default)]
     suppressions: Vec<SuppressionEntry>,
 }
 
+/// A validated entry paired with its compiled glob matcher.
+///
+/// Compilation happens once at load (not per finding), and invalid globs
+/// fail the whole load — a typo'd glob matching nothing would silently
+/// unsuppress findings the author believed were covered.
 struct Compiled {
+    /// Validated entry (all fields non-empty, expiry well-formed).
     entry: SuppressionEntry,
+    /// Compiled `path` glob.
     matcher: GlobMatcher,
 }
 
+/// Today's date as `YYYY-MM-DD` in UTC, without a date dependency.
+///
+/// Implements Howard Hinnant's days-to-civil algorithm over days since the
+/// Unix epoch. A hand-rolled converter avoids pulling in `chrono` for one
+/// comparison; string comparison against `expires` is valid because both
+/// sides are zero-padded ISO dates. Clock failures (pre-epoch time) degrade
+/// to day zero (1970-01-01), which only makes expiries MORE likely to be
+/// treated as expired — the safe direction.
 pub fn today_iso() -> String {
     let days = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs() / 86_400)
         .unwrap_or(0) as i64;
+    // Shift to the civil epoch (0000-03-01) so leap years form a regular
+    // 400-year cycle; the negative branch keeps era math correct pre-1970.
     let shifted = days + 719_468;
     let era = if shifted >= 0 {
         shifted
@@ -56,6 +95,12 @@ pub fn today_iso() -> String {
     format!("{civil_year:04}-{month:02}-{day:02}")
 }
 
+/// Strict `YYYY-MM-DD` shape check with plausible month/day ranges.
+///
+/// Deliberately calendar-light: Feb 30 passes, because expiry semantics only
+/// need lexicographic comparability, not real dates. What matters is
+/// rejecting empty strings, wrong separators, and non-digits — anything that
+/// would make expiry comparisons meaningless.
 fn valid_expiry(value: &str) -> bool {
     let bytes = value.as_bytes();
     if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
@@ -74,6 +119,12 @@ fn valid_expiry(value: &str) -> bool {
     (1..=12).contains(&month) && (1..=31).contains(&day)
 }
 
+/// Loads and validates a suppression file, compiling every glob.
+///
+/// Fail-closed on all fronts: unreadable file, invalid JSON, empty fields,
+/// bad expiry, or bad glob each abort with the entry index for easy fixes.
+/// The index in the error location is load-bearing UX — suppression files
+/// grow long, and "entry 12" beats re-reading the whole file.
 fn load(path: &Path) -> Result<Vec<Compiled>> {
     let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let file: SuppressionFile =
@@ -104,6 +155,21 @@ fn load(path: &Path) -> Result<Vec<Compiled>> {
     Ok(compiled)
 }
 
+/// Applies suppressions to a scanned report in place.
+///
+/// For each security and secret finding (in order): the rule ID must match
+/// exactly, the path glob is tried against BOTH the stored path and the
+/// target-relative path (so entries work whether the user writes absolute or
+/// relative globs), and the entry must not be expired. The first matching
+/// live entry wins (`break`) — findings carry one justification, and
+/// overlapping entries would otherwise double-count `applied`. Expired
+/// entries that WOULD have matched are collected (deduped via `BTreeSet`)
+/// into the report's `expired` list for cleanup; entries matching nothing at
+/// all are not reported (unused-entry linting is future work).
+///
+/// The `rule_id`/`path` clones before the closure work around borrow rules:
+/// the closure needs owned values while `finding.suppressed` is mutably
+/// borrowed, and these strings are small.
 pub fn apply_suppressions(report: &mut Report, path: &Path) -> Result<()> {
     let compiled = load(path)?;
     let today = today_iso();
@@ -120,6 +186,7 @@ pub fn apply_suppressions(report: &mut Report, path: &Path) -> Result<()> {
                 if !item.matcher.is_match(finding_path) && !item.matcher.is_match(relative) {
                     continue;
                 }
+                // String comparison is chronological for zero-padded ISO dates.
                 if item.entry.expires < today {
                     expired.insert(format!("{} {}", item.entry.rule_id, item.entry.path));
                     continue;
@@ -159,6 +226,8 @@ pub fn apply_suppressions(report: &mut Report, path: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The date converter produces a valid ISO date in a sane range — a
+    /// smoke test that the civil-date math is not wildly off.
     #[test]
     fn today_is_a_valid_iso_date() {
         let today = today_iso();
@@ -167,6 +236,8 @@ mod tests {
         assert!(today.as_str() < "2100-01-01");
     }
 
+    /// Expiry validation accepts the canonical shape and rejects empty,
+    /// unpadded, wrong-separator, out-of-range, non-date, and overlong input.
     #[test]
     fn expiry_validation_rejects_bad_shapes() {
         assert!(valid_expiry("2999-12-31"));
@@ -185,6 +256,8 @@ mod tests {
         }
     }
 
+    /// Bad glob, missing required field, and bad expiry each fail the whole
+    /// load (fail closed), while `{}` loads as vacuous-but-valid.
     #[test]
     fn malformed_suppression_files_fail_closed() {
         let directory = tempfile::tempdir().unwrap();

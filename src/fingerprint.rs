@@ -1,6 +1,27 @@
+//! Stable finding fingerprints for baseline, diff, and suppression matching.
+//!
+//! A fingerprint answers "is this the same finding as before?" across runs.
+//! The hash inputs are deliberately narrow: moving a finding by one line
+//! changes its fingerprint (surfaced as fixed+new, which is honest), while
+//! cosmetic report changes — evidence truncation, confidence upgrades,
+//! taint traces — must NOT change it, or baselines would churn on every
+//! scanner upgrade. The `*Like` structs in `report.rs` exist precisely to
+//! pin this input set in one place.
+//!
+//! FNV-1a is used instead of a cryptographic hash because fingerprints are
+//! correlation IDs, not security boundaries; 64 bits rendered as 16 hex
+//! characters is enough to make accidental collisions negligible at the
+//! finding counts involved.
+
 use crate::report::{SecretFindingLike, SecurityFindingLike};
 
+/// Hashes bytes with 64-bit FNV-1a and renders the digest as 16 hex chars.
+///
+/// Also reused for secret content fingerprints, where the digest stands in
+/// for the redacted secret material in reports.
 pub fn fnv_hex(bytes: &[u8]) -> String {
+    // FNV offset basis and prime for 64-bit; `wrapping_mul` is the defined
+    // overflow behaviour the algorithm requires (not a bug workaround).
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in bytes {
         hash ^= u64::from(*byte);
@@ -9,6 +30,12 @@ pub fn fnv_hex(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
+/// Joins fingerprint parts with NUL separators.
+///
+/// The separator matters: without it, `("ab", "c")` and `("a", "bc")` would
+/// hash identically. NUL cannot appear in rule IDs, paths, or callees in
+/// practice, and even adversarial paths cannot induce a collision that
+/// survives the surrounding location fields.
 fn join(parts: &[&str]) -> String {
     let mut key = String::new();
     for part in parts {
@@ -18,6 +45,11 @@ fn join(parts: &[&str]) -> String {
     key
 }
 
+/// Fingerprint for an AST security finding: rule + path + line + column + callee.
+///
+/// Excludes evidence, message, confidence, `resolved_callee`, and taint so
+/// that scanner improvements (better evidence, taint-lite upgrades) never
+/// resurrect baselined findings as "new".
 pub fn security_fingerprint(finding: &SecurityFindingLike) -> String {
     fnv_hex(
         join(&[
@@ -31,6 +63,11 @@ pub fn security_fingerprint(finding: &SecurityFindingLike) -> String {
     )
 }
 
+/// Fingerprint for a secret finding: rule + path + line + column + content hash.
+///
+/// Unlike security findings, the secret's content hash IS an input: rotating
+/// a credential must surface as fixed+new (the old leak is fixed, the new
+/// material is a fresh finding), not silently match the old entry.
 pub fn secret_fingerprint(finding: &SecretFindingLike) -> String {
     fnv_hex(
         join(&[
@@ -48,6 +85,8 @@ pub fn secret_fingerprint(finding: &SecretFindingLike) -> String {
 mod tests {
     use super::*;
 
+    /// Same finding hashes identically; moving one line changes the hash;
+    /// output is always 16 hex characters.
     #[test]
     fn fingerprints_are_stable_and_distinct() {
         let base = SecurityFindingLike {
@@ -65,6 +104,8 @@ mod tests {
         assert_eq!(security_fingerprint(&base).len(), 16);
     }
 
+    /// Rotating a secret (same location, new content hash) must NOT match
+    /// the old fingerprint, or rotation would look like "still present".
     #[test]
     fn secret_rotation_changes_fingerprint() {
         let rotated = SecretFindingLike {

@@ -1,9 +1,25 @@
+//! JSON Schema conformance checking for loop3r reports.
+//!
+//! The schemas in `schema/` (draft 2020-12) pin every report's shape, and
+//! this module implements just enough of the spec to validate against them:
+//! `const`, `enum`, `type` (single or union), `properties` + `required` +
+//! `additionalProperties`, `items`, and `anyOf`. A hand-rolled checker (not a
+//! validation crate) keeps the dependency tree small and error messages
+//! loop3r-specific (`$.security_findings[0]: missing required key taint`).
+//! Anything unsupported in a schema is ignored rather than rejected, so the
+//! checker stays forward-compatible with schema additions it doesn't model
+//! (minimums, patterns, formats are documentation, not gates).
+
 use anyhow::Context;
 use serde_json::Value;
 
+/// JSON Schema type predicate over a value. Unknown type names return true
+/// (ignore, don't fail) per the forward-compatibility rule above.
 fn matches_type(value: &Value, kind: &str) -> bool {
     match kind {
         "string" => value.is_string(),
+        // `as_i64` restricts integers to the i64 range; report counts and
+        // versions always fit, and floats like 1.5 correctly fail.
         "integer" => value.as_i64().is_some(),
         "number" => value.is_number(),
         "boolean" => value.is_boolean(),
@@ -14,6 +30,15 @@ fn matches_type(value: &Value, kind: &str) -> bool {
     }
 }
 
+/// Recursively checks a value against a schema node, accumulating errors.
+///
+/// `path` is a jq-style breadcrumb (`$.security_findings[0].taint`) so users
+/// can locate failures in large reports. Non-object schemas are vacuous
+/// (boolean schemas are not used by loop3r schemas). Check order: `const`,
+/// `enum`, `type` (a type miss returns early — deeper checks would cascade
+/// noise), then object properties (required keys + per-key recursion +
+/// undocumented-key rejection unless `additionalProperties: true`), array
+/// items, and finally `anyOf` (passes when ANY branch is error-free).
 fn check_value(value: &Value, schema: &Value, path: &str, errors: &mut Vec<String>) {
     let Some(object) = schema.as_object() else {
         return;
@@ -74,6 +99,9 @@ fn check_value(value: &Value, schema: &Value, path: &str, errors: &mut Vec<Strin
     if let Some(branches) = object.get("anyOf").and_then(Value::as_array) {
         let mut matched = false;
         for branch in branches {
+            // Branch errors are discarded: `anyOf` reports only the overall
+            // failure, since per-branch noise (e.g. "expected null, got
+            // object" for the null branch) would confuse more than help.
             let mut branch_errors = Vec::new();
             check_value(value, branch, path, &mut branch_errors);
             if branch_errors.is_empty() {
@@ -87,12 +115,20 @@ fn check_value(value: &Value, schema: &Value, path: &str, errors: &mut Vec<Strin
     }
 }
 
+/// Returns all conformance errors for a report, or empty when it conforms.
+/// Collecting (not failing fast) shows users every problem in one run.
 pub fn conformance_errors(report: &Value, schema: &Value) -> Vec<String> {
     let mut errors = Vec::new();
     check_value(report, schema, "$", &mut errors);
     errors
 }
 
+/// Loads an embedded schema by short name (`scan`, `deps`, `web`, `diff`).
+///
+/// Schemas ship in the binary via `include_str!`, so `validate` works
+/// offline and can never disagree with the emitting code. `scan` always
+/// means the LATEST scan schema (v4); older `scan-v3.schema.json` stays on
+/// disk for reading historical reports but is not addressable here.
 pub fn load_schema(name: &str) -> anyhow::Result<Value> {
     let text = match name {
         "scan" => include_str!("../schema/scan-v4.schema.json"),
@@ -108,6 +144,9 @@ pub fn load_schema(name: &str) -> anyhow::Result<Value> {
 mod tests {
     use super::*;
 
+    /// Test-local schema loader mirroring [`load_schema`] (tests cannot call
+    /// it for the version-pinning assertion without circularity of intent —
+    /// pinning the files directly is the stronger check).
     fn schema(name: &str) -> Value {
         let text = match name {
             "scan" => include_str!("../schema/scan-v4.schema.json"),
@@ -119,6 +158,9 @@ mod tests {
         serde_json::from_str(text).unwrap()
     }
 
+    /// Every schema declares draft 2020-12 and pins its expected
+    /// `schema_version` const — bumping a schema without updating the
+    /// emitter (or vice versa) fails here.
     #[test]
     fn schemas_pin_expected_versions() {
         for (name, version) in [("scan", 4), ("deps", 2), ("web", 1), ("diff", 1)] {
@@ -131,6 +173,8 @@ mod tests {
         }
     }
 
+    /// The checker reports missing required keys, undocumented keys, and
+    /// const mismatches with actionable paths.
     #[test]
     fn checker_reports_missing_required_and_unknown_keys() {
         let schema = schema("deps");
@@ -158,6 +202,10 @@ mod tests {
         assert!(errors.iter().any(|error| error.contains("expected const")));
     }
 
+    /// End-to-end: a real scan (with syntax error, secret, suppression, and
+    /// baseline all exercised) conforms to the embedded scan schema. This is
+    /// the anti-drift test — any new report field must be added to the
+    /// schema or this fails on "undocumented key".
     #[test]
     fn scan_report_conforms_to_schema() {
         let directory = tempfile::tempdir().unwrap();
@@ -197,6 +245,8 @@ mod tests {
         );
     }
 
+    /// End-to-end: a real inventory (valid + malformed lockfiles, unsupported
+    /// file, advisory match) conforms to the embedded deps schema.
     #[test]
     fn deps_report_conforms_to_schema() {
         let directory = tempfile::tempdir().unwrap();
@@ -227,6 +277,9 @@ mod tests {
         );
     }
 
+    /// End-to-end: a real loopback probe (3xx redirect) and a real diff both
+    /// conform. The HTTP server is a raw `TcpListener` speaking just enough
+    /// HTTP for one response — no mocks, no external services, bounded reads.
     #[test]
     fn web_and_diff_reports_conform_to_schema() {
         use std::io::{Read, Write};
@@ -266,7 +319,7 @@ mod tests {
         let old = crate::source::scan(directory.path(), 1_000_000, 600, 42, scope).unwrap();
         let old_path = directory.path().join("old.json");
         std::fs::write(&old_path, serde_json::to_vec(&old).unwrap()).unwrap();
-        std::fs::write(directory.path().join("b.py"), "eval(x)\n").unwrap();
+        std::fs::write(directory.path().join("b.py"), "eval(y)\n").unwrap();
         let scope = crate::scope::Scope::new(vec![], vec![], vec![]).unwrap();
         let new = crate::source::scan(directory.path(), 1_000_000, 600, 42, scope).unwrap();
         let new_path = directory.path().join("new.json");

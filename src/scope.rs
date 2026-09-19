@@ -1,3 +1,14 @@
+//! Scan scope: which files are in, which are out, and why.
+//!
+//! Discovery turns a target path plus include/exclude globs and language
+//! filters into three buckets: parsed sources, secrets-only configs, and
+//! skip counts. Two security properties matter here: symlinks are never
+//! followed (a malicious checkout must not pull `/etc` into a scan), and
+//! single-file targets fail closed on oversized/unsupported input while
+//! directory walks count and continue (one giant vendored file must not
+//! abort a whole-tree audit, but an explicitly named bad target is caller
+//! error, not a skip).
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -7,25 +18,45 @@ use walkdir::{DirEntry, WalkDir};
 
 use crate::language::LanguageId;
 
+/// Serialized scope echo stored in every report, so readers can see exactly
+/// which target, caps, and filters produced the results.
 #[derive(Serialize)]
 pub struct ScopeReport {
+    /// Target path as passed on the command line.
     pub target: PathBuf,
+    /// Per-file byte cap (`--max-file-bytes`).
     pub max_file_bytes: u64,
+    /// Deadline in seconds (`--budget-seconds`).
     pub budget_seconds: u64,
+    /// Include globs as passed (empty means "everything").
     pub include: Vec<String>,
+    /// Exclude globs as passed.
     pub exclude: Vec<String>,
+    /// Language filter (`--language`); empty means "all languages".
     pub languages: Vec<LanguageId>,
 }
 
+/// Compiled include/exclude/language filters for one scan.
+///
+/// Holds both the original pattern strings (echoed into reports) and the
+/// compiled glob sets (used for matching). Construction validates every glob
+/// up front so a typo fails before any file is read.
 pub struct Scope {
+    /// Raw include patterns, kept for the report echo.
     include_patterns: Vec<String>,
+    /// Raw exclude patterns, kept for the report echo.
     exclude_patterns: Vec<String>,
+    /// Compiled include matchers.
     include: GlobSet,
+    /// Compiled exclude matchers.
     exclude: GlobSet,
+    /// Language allowlist; empty allows all.
     languages: Vec<LanguageId>,
 }
 
 impl Scope {
+    /// Builds a scope, rejecting invalid globs immediately (fail closed on
+    /// caller error rather than silently matching nothing — or everything).
     pub fn new(
         include: Vec<String>,
         exclude: Vec<String>,
@@ -49,30 +80,45 @@ impl Scope {
         })
     }
 
+    /// Whether a parsed source file (matched by its target-relative path)
+    /// survives all three filters: include (vacuous when empty), exclude
+    /// (always wins), and language allowlist (vacuous when empty).
     pub fn allows(&self, relative: &Path, language: LanguageId) -> bool {
         (self.include_patterns.is_empty() || self.include.is_match(relative))
             && !self.exclude.is_match(relative)
             && (self.languages.is_empty() || self.languages.contains(&language))
     }
 
+    /// Whether a secrets-only config file survives glob filters.
+    ///
+    /// Deliberately ignores `--language`: secrets hide in every config
+    /// format, and a language filter like `--language rust` must never
+    /// silently drop `.env` files from secret scanning.
     pub fn allows_secret_file(&self, relative: &Path) -> bool {
         (self.include_patterns.is_empty() || self.include.is_match(relative))
             && !self.exclude.is_match(relative)
     }
 
+    /// Raw include patterns for the report echo.
     pub fn include_patterns(&self) -> &[String] {
         &self.include_patterns
     }
 
+    /// Raw exclude patterns for the report echo.
     pub fn exclude_patterns(&self) -> &[String] {
         &self.exclude_patterns
     }
 
+    /// Language allowlist for the report echo.
     pub fn languages(&self) -> &[LanguageId] {
         &self.languages
     }
 }
 
+/// Directories pruned before descent: version control, dependency trees, and
+/// build output. Matching is by exact directory name (not substring), so a
+/// source directory named `my-target` is still scanned. `pub(crate)` so the
+/// dependency walker in `deps.rs` shares the identical ignore list.
 pub(crate) fn ignored(entry: &DirEntry) -> bool {
     entry.file_type().is_dir()
         && matches!(
@@ -81,13 +127,24 @@ pub(crate) fn ignored(entry: &DirEntry) -> bool {
         )
 }
 
+/// Discovery result: the three file buckets plus skip accounting.
+///
+/// Skip counts are first-class report fields — "no findings" alongside large
+/// skip counts means "barely scanned", and hiding that would be dishonest.
 pub struct Discovery {
+    /// Sources to parse, each paired with its detected language.
     pub files: Vec<(PathBuf, LanguageId)>,
+    /// Configs to secret-scan without parsing.
     pub secret_files: Vec<PathBuf>,
+    /// Walked files dropped for exceeding the byte cap.
     pub skipped_oversized: usize,
+    /// Walked files with unrecognized extensions.
     pub skipped_unsupported: usize,
 }
 
+/// Whether a path is a secrets-only config: `.env` variants by exact file
+/// name, or a config extension (case-insensitive). These files are never
+/// parsed — only secret-scanned — because they have no useful AST.
 pub fn is_secret_file(path: &Path) -> bool {
     let name = path
         .file_name()
@@ -106,6 +163,8 @@ pub fn is_secret_file(path: &Path) -> bool {
     )
 }
 
+/// Empty discovery for single-file targets that the scope filters out: not
+/// an error, just a scan with nothing to do.
 fn empty_discovery() -> Discovery {
     Discovery {
         files: Vec::new(),
@@ -115,8 +174,23 @@ fn empty_discovery() -> Discovery {
     }
 }
 
+/// Discovers in-scope files for a file or directory target.
+///
+/// Single-file targets: symlinks are refused outright (a scanner that
+/// follows an attacker-planted symlink reads attacker-chosen paths), and
+/// oversized/unsupported files are hard errors — explicitly naming a file
+/// the scanner cannot handle is caller error. The bare file name (not a
+/// target-relative path) is scope-checked since there is no tree to be
+/// relative to.
+///
+/// Directory targets: walked without following any symlinks, with ignored
+/// trees pruned before descent. Oversized/unsupported files are counted, not
+/// errors. Both output lists are sorted so discovery order is deterministic
+/// before the seeded shuffle in `source.rs`.
 pub fn source_files(target: &Path, max_bytes: u64, scope: &Scope) -> Result<Discovery> {
     if target.is_file() {
+        // `symlink_metadata` (not `metadata`) is the check that sees the
+        // link itself instead of its target.
         if std::fs::symlink_metadata(target)?.file_type().is_symlink() {
             anyhow::bail!("refusing symlink target: {}", target.display());
         }

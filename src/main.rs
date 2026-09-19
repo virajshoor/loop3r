@@ -1,3 +1,17 @@
+//! loop3r: self-contained source security auditor (CLI entry point).
+//!
+//! This crate root only declares modules, defines the clap CLI (`scan`,
+//! `web`, `deps`, `diff`, `validate`), dispatches to the analysis modules,
+//! and maps outcomes onto exit codes: `0` clean (or success for
+//! `deps`/`diff`), `1` gated findings / schema errors, `2` scanner or
+//! configuration errors. All analysis lives in the sibling modules —
+//! `main.rs` orchestrates and renders, nothing more.
+//!
+//! The `tests` module below holds the cross-module integration suite:
+//! grammar fixtures, rule-matching semantics, filesystem scope, baseline /
+//! diff / suppression flows, and real loopback HTTP probes. Unit tests for
+//! individual modules live next to their code.
+
 mod advisory;
 mod core;
 mod deps;
@@ -27,9 +41,13 @@ use crate::language::LanguageId;
 use crate::report::write_private;
 use crate::scope::Scope;
 
+/// Output format for `scan` and `web`: native JSON or SARIF 2.1.0.
+/// `Copy` because the value is matched repeatedly during rendering.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 enum ReportFormat {
+    /// loop3r's native versioned JSON report.
     Json,
+    /// SARIF 2.1.0 for GitHub code scanning and IDE ingestion.
     Sarif,
 }
 
@@ -42,9 +60,12 @@ impl std::fmt::Display for ReportFormat {
     }
 }
 
+/// Output format for `deps`: native JSON inventory or CycloneDX SBOM.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 enum DepsFormat {
+    /// loop3r's native versioned JSON inventory.
     Json,
+    /// CycloneDX 1.6 SBOM rendered from the inventory.
     Sbom,
 }
 impl std::fmt::Display for DepsFormat {
@@ -56,15 +77,21 @@ impl std::fmt::Display for DepsFormat {
     }
 }
 
+/// Which embedded schema `validate` checks a report file against.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 enum SchemaKind {
+    /// Latest source scan report schema.
     Scan,
+    /// Dependency inventory schema.
     Deps,
+    /// Web probe report schema.
     Web,
+    /// Diff comparison schema.
     Diff,
 }
 
 impl SchemaKind {
+    /// Short schema name understood by `schema::load_schema`.
     fn name(self) -> &'static str {
         match self {
             Self::Scan => "scan",
@@ -82,81 +109,121 @@ impl SchemaKind {
     about = "Self-contained source security auditor"
 )]
 struct Cli {
+    /// The single required subcommand; loop3r has no bare mode.
     #[command(subcommand)]
     command: Command,
 }
 
+/// Subcommands. Each renders machine output (`--json`/`--output`/non-default
+/// `--format`) or a one-line human summary, and returns its exit code.
 #[derive(Subcommand)]
 enum Command {
     /// Parse source with embedded grammars and report syntax coverage.
     Scan {
+        /// File or directory to audit.
         target: PathBuf,
+        /// Per-file byte cap; larger files are refused (single target) or
+        /// counted as skipped (directory walk). Default 1 MB.
         #[arg(long, default_value_t = 1_000_000)]
         max_file_bytes: u64,
+        /// Print the machine report to stdout instead of the human summary.
         #[arg(long)]
         json: bool,
+        /// Write the machine report atomically (mode 0600 on Unix).
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Deadline in seconds; expiry marks `timed_out`, never silently
+        /// drops work. Default 600.
         #[arg(long, default_value_t = 600)]
         budget_seconds: u64,
+        /// Shuffle seed for file order; defaults to time-derived nanos.
+        /// Fixed seeds reproduce budget-expiry partial scans exactly.
         #[arg(long)]
         seed: Option<u64>,
+        /// Include globs (repeatable); empty means everything.
         #[arg(long)]
         include: Vec<String>,
+        /// Exclude globs (repeatable); always wins over includes.
         #[arg(long)]
         exclude: Vec<String>,
+        /// Language filter (repeatable); empty means all. Never excludes
+        /// secrets-only configs from secret scanning.
         #[arg(long, value_enum)]
         language: Vec<LanguageId>,
+        /// Report rendering: native JSON or SARIF 2.1.0.
         #[arg(long, value_enum, default_value_t = ReportFormat::Json)]
         format: ReportFormat,
+        /// Baseline report: gates the exit code on NEW findings only.
         #[arg(long)]
         baseline: Option<PathBuf>,
+        /// Suppression file: annotates findings, never deletes them.
         #[arg(long)]
         suppress: Option<PathBuf>,
     },
     /// Run read-only HTTP checks against an authorized loopback website.
     Web {
+        /// URL to probe; must be loopback http/https without credentials.
         url: String,
+        /// Explicit authorization flag — probing requires opt-in even for
+        /// loopback, so accidental scans in scripts fail loudly.
         #[arg(long)]
         authorized: bool,
+        /// Request timeout in seconds (1–120). Default 10.
         #[arg(long, default_value_t = 10)]
         timeout_seconds: u64,
+        /// Print the machine report to stdout instead of the human summary.
         #[arg(long)]
         json: bool,
+        /// Write the machine report atomically (mode 0600 on Unix).
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Report rendering: native JSON or SARIF 2.1.0.
         #[arg(long, value_enum, default_value_t = ReportFormat::Json)]
         format: ReportFormat,
     },
     /// Inventory exact dependency versions from lockfiles, optionally matched advisories.
     Deps {
+        /// File or directory to inventory.
         target: PathBuf,
+        /// Print the machine report to stdout instead of the human summary.
         #[arg(long)]
         json: bool,
+        /// Write the machine report atomically (mode 0600 on Unix).
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Rendering: native JSON inventory or CycloneDX SBOM.
         #[arg(long, value_enum, default_value_t = DepsFormat::Json)]
         format: DepsFormat,
+        /// Advisory snapshot for exact-version vulnerability matching.
         #[arg(long)]
         advisory_db: Option<PathBuf>,
     },
     /// Compare two source scan reports by finding fingerprint.
     Diff {
+        /// Older (baseline-side) report.
         old: PathBuf,
+        /// Newer (current-side) report.
         new: PathBuf,
+        /// Print the machine report to stdout instead of the human summary.
         #[arg(long)]
         json: bool,
+        /// Write the machine report atomically (mode 0600 on Unix).
         #[arg(long)]
         output: Option<PathBuf>,
     },
     /// Validate a report file against its embedded JSON schema.
     Validate {
+        /// Report file to check.
         file: PathBuf,
+        /// Which schema to check against (scan/deps/web/diff).
         #[arg(long, value_enum)]
         schema: SchemaKind,
     },
 }
 
+/// Dispatches the CLI: parses flags, runs the analysis, renders output,
+/// and returns the process exit code (0/1). Hard failures return `Err` and
+/// become exit code 2 in [`main`].
 fn run() -> Result<u8> {
     let cli = Cli::parse();
     match cli.command {
@@ -174,17 +241,25 @@ fn run() -> Result<u8> {
             baseline,
             suppress,
         } => {
+            // Zero budget or zero cap would scan nothing while reporting
+            // success — reject instead.
             if budget_seconds == 0 || max_file_bytes == 0 {
                 bail!("budget-seconds and max-file-bytes must be positive");
             }
+            // Default seed is time-derived so repeated budget-limited scans
+            // cover different files; explicit `--seed` replays exactly.
             let seed = seed.unwrap_or_else(|| {
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_nanos() as u64
             });
+            // Scope compiles (and validates globs) before any I/O, so a bad
+            // pattern fails fast instead of after a long scan.
             let scope = Scope::new(include, exclude, language)?;
             let mut report = source::scan(&target, max_file_bytes, budget_seconds, seed, scope)?;
+            // Suppressions apply before baselining so `has_unsuppressed_new`
+            // sees settled suppression state when gating the exit code.
             if let Some(path) = &suppress {
                 suppress::apply_suppressions(&mut report, path)?;
             }
@@ -196,6 +271,8 @@ fn run() -> Result<u8> {
                 ReportFormat::Json => serde_json::to_vec_pretty(&report)?,
                 ReportFormat::Sarif => serde_json::to_vec_pretty(&sarif::source_to_sarif(&report))?,
             };
+            // Machine output whenever the user asked for a file, JSON, or a
+            // non-default format; otherwise a one-line human summary.
             let machine = output.is_some() || json || !matches!(format, ReportFormat::Json);
             if let Some(path) = output {
                 write_private(&path, &rendered)?;
@@ -241,6 +318,8 @@ fn run() -> Result<u8> {
                     }
                 }
             }
+            // Exit 1 only for live, unsuppressed, non-baselined findings:
+            // suppressed or already-known findings never fail CI.
             Ok(u8::from(diff::has_unsuppressed_new(
                 &report,
                 baseline_sets.as_ref(),
@@ -254,6 +333,9 @@ fn run() -> Result<u8> {
             output,
             format,
         } => {
+            // The authorization gate lives in the CLI (not the library) so
+            // tests can probe loopback without the flag while every real
+            // invocation must opt in.
             if !authorized {
                 bail!("--authorized required for web checks");
             }
@@ -277,6 +359,8 @@ fn run() -> Result<u8> {
                     println!("redirects disabled; Location: {location}");
                 }
             }
+            // Any web finding fails: probes have no baseline or suppression
+            // model, so every observation is actionable.
             Ok(u8::from(!report.findings.is_empty()))
         }
         Command::Deps {
@@ -303,6 +387,8 @@ fn run() -> Result<u8> {
                     "{}",
                     String::from_utf8(rendered).context("serializing report")?
                 );
+            // The human summary names the advisory DB whenever matching ran,
+            // so "0 vulnerabilities" is never ambiguous about what ran.
             } else if let Some(path) = &report.advisory_db {
                 println!(
                     "{} packages from {} lockfiles; {} unsupported; {} errors; {} vulnerabilities (db {})",
@@ -322,6 +408,8 @@ fn run() -> Result<u8> {
                     report.errors.len()
                 );
             }
+            // Inventory itself never gates: `deps` reports facts, and policy
+            // (advisory severity gates) lives in the consumer.
             Ok(0)
         }
         Command::Diff {
@@ -372,6 +460,9 @@ fn run() -> Result<u8> {
     }
 }
 
+/// Entry point: finding-gate exits (0/1) pass through, while any `Err`
+/// (bad flags, I/O, validation failures) prints the full error chain to
+/// stderr and exits 2 — distinguishing "findings found" from "scan broken".
 fn main() -> ExitCode {
     match run() {
         Ok(code) => ExitCode::from(code),
@@ -382,6 +473,10 @@ fn main() -> ExitCode {
     }
 }
 
+/// Cross-module integration suite: no mocks anywhere — real grammars,
+/// real tempdir filesystems, and real loopback TCP servers. Fixture
+/// snippets are minimal but must parse WITHOUT grammar errors, so a
+/// fixture failure always means a regression, never a bad fixture.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +486,8 @@ mod tests {
     use std::path::Path;
     use tree_sitter::Parser;
 
+    /// Smoke test for every embedded grammar: one idiomatic snippet each,
+    /// all must parse error-free. Catches grammar/ABI breakage on upgrade.
     #[test]
     fn every_language_parses_real_syntax() {
         let fixtures = [
@@ -433,6 +530,9 @@ mod tests {
         }
     }
 
+    /// The structural-matching guarantee: `eval(user)` in a comment and in
+    /// a string literal are silent; only the real call on line 3 fires.
+    /// A text-grep scanner would report three hits.
     #[test]
     fn ast_rule_ignores_comments_and_strings() {
         let rules = crate::core::load_ast_rules().unwrap();
@@ -456,6 +556,9 @@ mod tests {
         assert_eq!(security[0].rule_id, "CORE-PY-EVAL");
     }
 
+    /// Test helper: parses one snippet with the real grammar and returns
+    /// its security findings. Panics on grammar ERRORS so fixtures stay
+    /// valid — findings assertions then test rules, not parsing.
     fn findings(language: LanguageId, source: &str) -> Vec<crate::report::SecurityFinding> {
         let rules = crate::core::load_ast_rules().unwrap();
         let mut parser = Parser::new();
@@ -480,6 +583,8 @@ mod tests {
         security
     }
 
+    /// One canonical dangerous call per language family fires its rule:
+    /// proves each language's call-shape extraction works end to end.
     #[test]
     fn language_specific_calls_are_structural() {
         let cases = [
@@ -539,6 +644,9 @@ mod tests {
         }
     }
 
+    /// Import resolution end to end: `from` imports, `as` aliases,
+    /// destructured and namespace `require`, and ESM imports all fire the
+    /// canonical rule AND record the resolved callee (`os.system`, …).
     #[test]
     fn imported_aliases_resolve_to_canonical_callees() {
         let cases = [
@@ -611,6 +719,8 @@ mod tests {
         }
     }
 
+    /// Resolution negatives: bare names, locals, and same-named imports
+    /// from unrelated modules (`./local`) must NOT fire import-gated rules.
     #[test]
     fn unimported_and_unrelated_names_do_not_resolve() {
         let cases = [
@@ -627,6 +737,9 @@ mod tests {
         }
     }
 
+    /// Argument matchers: `shell=True` (any spacing, direct or aliased),
+    /// bare `yaml.load`, `{shell: true}`, and PHP `eval` fire; `shell=False`,
+    /// missing shell flags, and `SafeLoader` stay silent.
     #[test]
     fn arg_aware_rules_fire_only_on_dangerous_arguments() {
         let positive = [
@@ -695,6 +808,10 @@ mod tests {
         }
     }
 
+    /// Taint-lite contract: a parameter-to-sink flow records the trace and
+    /// upgrades `review` rules from low to medium; literals, direct flows on
+    /// non-review rules, and `shlex.quote`-sanitized flows behave exactly as
+    /// specified; JavaScript parameters flow too.
     #[test]
     fn taint_flow_is_reported_and_upgrades_review_confidence() {
         let found = findings(
@@ -748,6 +865,10 @@ mod tests {
         assert!(matched.taint.is_some());
     }
 
+    /// Rule-catalog coverage: the fixture set must fire EVERY catalog rule
+    /// (found == catalog, so new rules require new fixtures), and each hit
+    /// carries the specified default confidence (`low` for review, `medium`
+    /// otherwise) before any taint upgrade.
     #[test]
     fn every_ast_rule_has_a_real_parse_tree_fixture() {
         let fixtures = [
@@ -813,12 +934,17 @@ mod tests {
         assert_eq!(found, expected);
     }
 
+    /// Catalog size pin: exactly 22 AST rules. Update deliberately when
+    /// adding rules — the number guards against accidental drops.
     #[test]
     fn core_rule_catalog_is_well_formed() {
         let rules = crate::core::load_ast_rules().unwrap();
         assert_eq!(rules.len(), 22);
     }
 
+    /// Filesystem scope end to end: include globs + language filter select
+    /// exactly one file from two, the 4-key confidence scale serializes into
+    /// the report, and `write_private` lands a 0600 file on Unix.
     #[test]
     fn real_filesystem_scope_and_private_report() {
         let directory = tempfile::tempdir().unwrap();
@@ -846,6 +972,9 @@ mod tests {
         }
     }
 
+    /// Secret redaction guarantee: the AWS key fires from inside a `.py`
+    /// file, but the SERIALIZED report never contains the raw key — only
+    /// the `AKIA[redacted]ZZZZ` evidence form.
     #[test]
     fn filesystem_scan_redacts_embedded_secrets() {
         let directory = tempfile::tempdir().unwrap();
@@ -864,6 +993,9 @@ mod tests {
         assert!(serialized.contains("AKIA[redacted]ZZZZ"));
     }
 
+    /// Inventory across ecosystems: Cargo + npm lockfiles parse into
+    /// sorted packages (cargo before npm), while `yarn.lock` lands in
+    /// `unsupported` — counted, never silent.
     #[test]
     fn dependency_inventory_reports_packages_and_unsupported() {
         let directory = tempfile::tempdir().unwrap();
@@ -888,6 +1020,8 @@ mod tests {
         assert_eq!(report.packages[1].ecosystem, "npm");
     }
 
+    /// A garbage `Cargo.lock` during a directory walk records one error and
+    /// zero lockfiles — the inventory survives, and the failure is visible.
     #[test]
     fn dependency_inventory_records_malformed_lockfile() {
         let directory = tempfile::tempdir().unwrap();
@@ -897,6 +1031,8 @@ mod tests {
         assert_eq!(report.errors.len(), 1);
     }
 
+    /// Advisory matching on a real inventory: the exact-version entry hits,
+    /// the wrong-version entry misses, and the SBOM renders the package.
     #[test]
     fn advisory_db_matches_exact_inventory_versions() {
         let directory = tempfile::tempdir().unwrap();
@@ -927,6 +1063,8 @@ mod tests {
         assert_eq!(sbom["components"].as_array().unwrap().len(), 1);
     }
 
+    /// Skip accounting with a 7-byte cap: one parsed, one oversized, one
+    /// unsupported (`.md`) — every input file lands in exactly one bucket.
     #[test]
     fn scan_reports_oversized_and_unsupported_skips() {
         let directory = tempfile::tempdir().unwrap();
@@ -940,6 +1078,9 @@ mod tests {
         assert_eq!(report.files_skipped_unsupported, 1);
     }
 
+    /// Config handling: `.env` + `config.json` count as secret-scanned (not
+    /// parsed), the `.md` file is unsupported, the `.env` key fires without
+    /// leaking into the serialized report.
     #[test]
     fn config_files_are_scanned_for_secrets_only() {
         let directory = tempfile::tempdir().unwrap();
@@ -964,6 +1105,8 @@ mod tests {
         assert!(!serialized.contains(&key));
     }
 
+    /// Single-file secret target: scanning a `.toml` directly yields zero
+    /// parsed files, one secret-scanned file, and the GitHub token finding.
     #[test]
     fn single_secret_file_target_scans() {
         let directory = tempfile::tempdir().unwrap();
@@ -978,6 +1121,8 @@ mod tests {
         assert_eq!(report.secret_findings[0].rule_id, "SECRET-GITHUB-TOKEN");
     }
 
+    /// Language filters gate PARSING only: with `--language rust`, the
+    /// Python file is unparsed (no AST findings) yet `.env` still scans.
     #[test]
     fn language_filter_does_not_exclude_secret_files() {
         let directory = tempfile::tempdir().unwrap();
@@ -992,6 +1137,10 @@ mod tests {
         assert_eq!(report.secret_findings.len(), 1);
     }
 
+    /// Suppression flow: the live entry marks the finding (reason + owner),
+    /// the gate goes quiet, SARIF shows kind `external`, and the expired
+    /// non-matching entry stays out of the expired list (correctly — expiry
+    /// is reported for entries that WOULD match).
     #[test]
     fn suppressions_mark_findings_and_report_expired() {
         let directory = tempfile::tempdir().unwrap();
@@ -1022,6 +1171,8 @@ mod tests {
         );
     }
 
+    /// Expired entries never suppress: the finding stays unmarked, applied
+    /// is 0, the gate stays loud, and the stale entry is named for cleanup.
     #[test]
     fn expired_suppressions_do_not_apply() {
         let directory = tempfile::tempdir().unwrap();
@@ -1043,6 +1194,9 @@ mod tests {
         assert!(crate::diff::has_unsuppressed_new(&report, None));
     }
 
+    /// Baseline lifecycle: renaming `a.py`→`b.py` yields one new + one
+    /// fixed finding (fingerprints include paths) with a loud gate; renaming
+    /// back yields zero new and a quiet gate.
     #[test]
     fn baseline_computes_new_and_fixed_findings() {
         let directory = tempfile::tempdir().unwrap();
@@ -1077,6 +1231,8 @@ mod tests {
         assert!(!crate::diff::has_unsuppressed_new(&report, Some(&sets)));
     }
 
+    /// Diff between two real scans: adding `b.py` reports one added, zero
+    /// fixed, one unchanged, with the added finding's rule ID intact.
     #[test]
     fn diff_reports_added_fixed_and_unchanged() {
         let directory = tempfile::tempdir().unwrap();
@@ -1098,6 +1254,10 @@ mod tests {
         assert_eq!(diff.added_security[0]["rule_id"], "CORE-PY-EVAL");
     }
 
+    /// Full web probe against a real loopback TCP server (no mocks): the
+    /// server asserts the `Origin` test header arrives, responds with the
+    /// hostile header set, and the probe reports exactly the six expected
+    /// rule IDs with CORS-credentials alone at `confirmed`.
     #[test]
     fn real_loopback_http_probe() {
         use std::io::{Read, Write};
@@ -1156,6 +1316,9 @@ mod tests {
         );
     }
 
+    /// Cookie anti-spoofing end to end: `trick=httponly-samesite-secure`
+    /// still fires HttpOnly + SameSite (value text is not attributes) while
+    /// the properly-flagged cookie stays silent.
     #[test]
     fn cookie_values_cannot_suppress_flag_findings() {
         use std::io::{Read, Write};
@@ -1189,6 +1352,9 @@ mod tests {
         }
     }
 
+    /// Robustness fuzz-lite: empty, hostile (NUL bytes, deep nesting,
+    /// non-UTF8), and maximal-Unicode inputs across every grammar must parse
+    /// and inspect without panicking, and emit no secret findings.
     #[test]
     fn malformed_and_binary_inputs_never_panic() {
         use crate::language::LanguageId;
@@ -1242,6 +1408,8 @@ mod tests {
         }
     }
 
+    /// Shuffle contract: same seed → identical order; output is a true
+    /// permutation (sorted == input), so budget-limited scans replay exactly.
     #[test]
     fn shuffle_is_deterministic_per_seed() {
         let input: Vec<u32> = (0..50).collect();
@@ -1255,6 +1423,9 @@ mod tests {
         assert_eq!(sorted, input);
     }
 
+    /// Redirect discipline: a 301's `Location` is recorded verbatim while
+    /// the probe issues no second request (the one-shot test server would
+    /// hang a follower — `join` proves exactly one request happened).
     #[test]
     fn web_probe_reports_redirect_location_without_following() {
         use std::io::{Read, Write};
@@ -1285,6 +1456,8 @@ mod tests {
         assert_eq!(report.redirect.as_deref(), Some("/elsewhere"));
     }
 
+    /// Loopback enforcement: a public URL is refused before any socket
+    /// opens — this test makes zero network requests by construction.
     #[test]
     fn web_probe_rejects_remote_target() {
         let error = crate::web::web_scan("https://example.com", 2).unwrap_err();

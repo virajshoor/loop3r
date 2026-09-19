@@ -1,9 +1,22 @@
+//! CycloneDX SBOM export: renders dependency inventory as spec 1.6.
+//!
+//! The SBOM is intentionally MINIMAL — format stamp, generation timestamp,
+//! tool identity, and one `library` component per package with name, version,
+//! and package URL. No licenses, hashes, or dependency graph: loop3r's
+//! lockfile parsers do not capture that data, and inventing it would poison
+//! downstream consumers. What is emitted is exactly what was inventoried.
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
 use crate::deps::DepsReport;
 
+/// Current UTC time as `YYYY-MM-DDTHH:MM:SSZ` for the SBOM metadata block.
+///
+/// Reuses the civil-date converter in `suppress.rs` for the date half and
+/// computes the clock half from day-seconds here. Clock failure degrades to
+/// midnight epoch — a wrong-but-valid timestamp beats aborting SBOM export.
 fn timestamp_utc() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -19,6 +32,11 @@ fn timestamp_utc() -> String {
     )
 }
 
+/// Builds a package URL (`pkg:<ecosystem>/<name>@<version>`).
+///
+/// Only npm scoped names need encoding (`@scope/name` → `%40scope/name` for
+/// the leading `@`; the `/` separator is legal in purls). Cargo names are
+/// used verbatim — crates.io names are already URL-safe.
 fn purl(ecosystem: &str, name: &str, version: &str) -> String {
     let encoded = if ecosystem == "npm" {
         name.replacen('@', "%40", 1)
@@ -28,6 +46,13 @@ fn purl(ecosystem: &str, name: &str, version: &str) -> String {
     format!("pkg:{ecosystem}/{encoded}@{version}")
 }
 
+/// Converts a dependency report into a CycloneDX 1.6 document.
+///
+/// Each inventoried package becomes one component with `bom-ref` == `purl`
+/// (the purl doubles as the document-local reference, a common CycloneDX
+/// practice for flat component lists). Tool metadata names loop3r with the
+/// compile-time version so consumers can trace SBOM provenance. Package
+/// order follows the already-sorted inventory, keeping output deterministic.
 pub fn deps_to_cyclonedx(report: &DepsReport) -> Value {
     let components: Vec<Value> = report
         .packages
@@ -80,6 +105,8 @@ mod tests {
     use crate::deps::Package;
     use std::path::PathBuf;
 
+    /// Minimal deps report wrapper; schema_version 1 is fine here because
+    /// SBOM conversion never reads it (it only walks `packages`).
     fn report(packages: Vec<Package>) -> DepsReport {
         DepsReport {
             schema_version: 1,
@@ -93,6 +120,9 @@ mod tests {
         }
     }
 
+    /// Full document check: format stamp, spec version, tool identity,
+    /// well-formed UTC timestamp, and exact purls — including npm scope
+    /// encoding and `bom-ref` == `purl`.
     #[test]
     fn emits_minimal_cyclonedx_with_purls() {
         let sbom = deps_to_cyclonedx(&report(vec![
@@ -126,6 +156,8 @@ mod tests {
         assert_eq!(components[1]["purl"], "pkg:npm/%40scope/name@2.0.1");
     }
 
+    /// Empty inventory yields a valid document with empty components —
+    /// consumers must accept "no dependencies", not choke on null.
     #[test]
     fn empty_inventory_yields_empty_components() {
         let sbom = deps_to_cyclonedx(&report(vec![]));
